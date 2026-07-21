@@ -151,10 +151,9 @@
       <div id="error" class="error"></div>
     </section>
   </main>
-  <iframe id="secureBridge" title="安全確認" hidden></iframe>
   <script>
     const LIFF_ID = '2010784641-JegLxj1v';
-    const BRIDGE_URL = 'https://script.google.com/macros/s/AKfycbxQnDug0a2w5EXUiZkPtrH6Z17bjJ7PceWjS_HQtSAMd9oJI6KkkwWnqp9hmGgpEwzb/exec?mode=bridge';
+    const BACKEND_URL = 'https://script.google.com/macros/s/AKfycbxQnDug0a2w5EXUiZkPtrH6Z17bjJ7PceWjS_HQtSAMd9oJI6KkkwWnqp9hmGgpEwzb/exec';
 
     function showError(message) {
       const error = document.getElementById('error');
@@ -167,48 +166,21 @@
       document.getElementById('progress').textContent = message;
     }
 
-    function verifyWithServer(idToken) {
-      return new Promise(function(resolve, reject) {
-        const frame = document.getElementById('secureBridge');
-        const requestId = String(Date.now()) + '-' + Math.random().toString(36).slice(2);
-        let finished = false;
+    async function verifyWithServer(idToken) {
+      const form = new URLSearchParams();
+      form.set('action', 'verifyLineToken');
+      form.set('idToken', idToken);
 
-        const timer = setTimeout(function() {
-          finish();
-          reject(new Error('安全確認用サーバーが応答しませんでした。'));
-        }, 20000);
-
-        function finish() {
-          if (finished) return;
-          finished = true;
-          clearTimeout(timer);
-          window.removeEventListener('message', onMessage);
-        }
-
-        function onMessage(event) {
-          if (event.source !== frame.contentWindow) return;
-          const data = event.data || {};
-          if (data.source !== 'jos-customer-bridge') return;
-
-          if (data.type === 'ready') {
-            frame.contentWindow.postMessage({
-              source: 'jos-customer-web',
-              type: 'verifyLineToken',
-              requestId: requestId,
-              idToken: idToken
-            }, '*');
-            return;
-          }
-
-          if (data.type === 'verifyResult' && String(data.requestId || '') === requestId) {
-            finish();
-            resolve(data.result || {});
-          }
-        }
-
-        window.addEventListener('message', onMessage);
-        frame.src = BRIDGE_URL + '&t=' + encodeURIComponent(String(Date.now()));
+      const response = await fetch(BACKEND_URL, {
+        method: 'POST',
+        body: form,
+        redirect: 'follow'
       });
+
+      if (!response.ok) {
+        throw new Error('安全確認用サーバーに接続できませんでした。');
+      }
+      return await response.json();
     }
 
     async function startLiff() {
