@@ -109,6 +109,12 @@
       font-size: 21px;
       font-weight: 900;
     }
+    .verified-note {
+      margin-top: 8px;
+      color: #027a48;
+      font-size: 13px;
+      font-weight: 800;
+    }
     .error {
       display: none;
       margin-top: 16px;
@@ -138,14 +144,17 @@
       <button id="loginButton" class="login-button" type="button" hidden>LINEでログイン</button>
       <div id="progress" class="progress">LINEとの接続を確認しています…</div>
       <div id="profile" class="profile">
-        <div class="profile-label">LINEログイン成功</div>
+        <div class="profile-label">LINE本人確認成功</div>
         <div id="profileName" class="profile-name"></div>
+        <div id="verifiedNote" class="verified-note"></div>
       </div>
       <div id="error" class="error"></div>
     </section>
   </main>
+  <iframe id="secureBridge" title="安全確認" hidden></iframe>
   <script>
     const LIFF_ID = '2010784641-JegLxj1v';
+    const BRIDGE_URL = 'https://script.google.com/macros/s/AKfycbxQnDug0a2w5EXUiZkPtrH6Z17bjJ7PceWjS_HQtSAMd9oJI6KkkwWnqp9hmGgpEwzb/exec?mode=bridge';
 
     function showError(message) {
       const error = document.getElementById('error');
@@ -156,6 +165,50 @@
 
     function setProgress(message) {
       document.getElementById('progress').textContent = message;
+    }
+
+    function verifyWithServer(idToken) {
+      return new Promise(function(resolve, reject) {
+        const frame = document.getElementById('secureBridge');
+        const requestId = String(Date.now()) + '-' + Math.random().toString(36).slice(2);
+        let finished = false;
+
+        const timer = setTimeout(function() {
+          finish();
+          reject(new Error('安全確認用サーバーが応答しませんでした。'));
+        }, 20000);
+
+        function finish() {
+          if (finished) return;
+          finished = true;
+          clearTimeout(timer);
+          window.removeEventListener('message', onMessage);
+        }
+
+        function onMessage(event) {
+          if (event.source !== frame.contentWindow) return;
+          const data = event.data || {};
+          if (data.source !== 'jos-customer-bridge') return;
+
+          if (data.type === 'ready') {
+            frame.contentWindow.postMessage({
+              source: 'jos-customer-web',
+              type: 'verifyLineToken',
+              requestId: requestId,
+              idToken: idToken
+            }, '*');
+            return;
+          }
+
+          if (data.type === 'verifyResult' && String(data.requestId || '') === requestId) {
+            finish();
+            resolve(data.result || {});
+          }
+        }
+
+        window.addEventListener('message', onMessage);
+        frame.src = BRIDGE_URL + '&t=' + encodeURIComponent(String(Date.now()));
+      });
     }
 
     async function startLiff() {
@@ -176,10 +229,15 @@
           return;
         }
 
-        setProgress('LINEプロフィールを確認しています…');
-        const profile = await liff.getProfile();
+        setProgress('LINE本人情報を安全に確認しています…');
+        const idToken = liff.getIDToken();
+        if (!idToken) throw new Error('LINE認証情報を取得できませんでした。');
+        const verified = await verifyWithServer(idToken);
+        if (!verified.ok) throw new Error(String(verified.message || 'LINE本人確認に失敗しました。'));
         document.getElementById('profileName').textContent =
-          String(profile.displayName || '') + ' さん';
+          String(verified.displayName || '') + ' さん';
+        document.getElementById('verifiedNote').textContent =
+          'LINE公式サーバーで確認済み ' + String(verified.verifiedAt || '');
         document.getElementById('profile').classList.add('is-visible');
         setProgress('');
       } catch (error) {
