@@ -14,7 +14,7 @@ function json(data, status = 200) {
 
 async function readJson(request) {
   const contentLength = Number(request.headers.get('content-length') || 0);
-  if (contentLength > 20000) throw new Error('送信データが大きすぎます。');
+  if (contentLength > 500000) throw new Error('送信データが大きすぎます。');
   try {
     return await request.json();
   } catch (_) {
@@ -96,6 +96,19 @@ function publicProfile(row) {
     firstKana: row.first_kana,
     phone: row.phone,
     linkStatus: row.link_status
+  };
+}
+
+function publicReservation(row) {
+  if (!row) return null;
+  return {
+    reservationId: row.reservation_id,
+    date: row.reservation_date,
+    startTime: row.start_time,
+    endTime: row.end_time,
+    menu: row.menu_name,
+    price: Number(row.price || 0),
+    status: row.reservation_status
   };
 }
 
@@ -188,6 +201,52 @@ async function adminApi(request, env, pathname) {
       });
     }
 
+    if (pathname === '/api/admin/approved') {
+      const result = await env.jos_customer_db.prepare(
+        `SELECT jos_customer_id
+           FROM customer_profiles
+          WHERE link_status = 'approved' AND jos_customer_id IS NOT NULL
+          ORDER BY approved_at ASC
+          LIMIT 1000`
+      ).all();
+      return json({
+        ok: true,
+        profiles: (result.results || []).map(row => ({ customerId: row.jos_customer_id }))
+      });
+    }
+
+    if (pathname === '/api/admin/reservations/sync') {
+      const body = await readJson(request);
+      const customerIds = Array.isArray(body.customerIds) ? body.customerIds.slice(0, 1000) : [];
+      const reservations = Array.isArray(body.reservations) ? body.reservations.slice(0, 1000) : [];
+      const allowed = new Set(customerIds.map(value => normalizeText(value, 80)).filter(Boolean));
+      const now = new Date().toISOString();
+      const statements = [env.jos_customer_db.prepare('DELETE FROM customer_next_reservations')];
+
+      reservations.forEach(item => {
+        const customerId = normalizeText(item.customerId, 80);
+        if (!customerId || !allowed.has(customerId)) return;
+        statements.push(env.jos_customer_db.prepare(
+          `INSERT INTO customer_next_reservations
+             (jos_customer_id, reservation_id, reservation_date, start_time,
+              end_time, menu_name, price, reservation_status, synced_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).bind(
+          customerId,
+          normalizeText(item.reservationId, 80),
+          normalizeText(item.date, 20),
+          normalizeText(item.startTime, 10),
+          normalizeText(item.endTime, 10),
+          normalizeText(item.menu, 300),
+          Number(item.price || 0),
+          normalizeText(item.status, 40),
+          now
+        ));
+      });
+      await env.jos_customer_db.batch(statements);
+      return json({ ok: true, reservationCount: statements.length - 1 });
+    }
+
     if (pathname === '/api/admin/approve') {
       const body = await readJson(request);
       const approvalKey = normalizeText(body.approvalKey, 80);
@@ -227,6 +286,22 @@ async function api(request, env, pathname) {
     }
     if (pathname === '/api/profile') return getProfile(env, identity);
     if (pathname === '/api/profile/save') return saveProfile(env, identity, body.profile || {});
+    if (pathname === '/api/next-reservation') {
+      const profile = await env.jos_customer_db.prepare(
+        `SELECT jos_customer_id FROM customer_profiles
+          WHERE line_sub = ? AND link_status = 'approved'`
+      ).bind(identity.sub).first();
+      if (!profile || !profile.jos_customer_id) {
+        return json({ ok: false, message: '店舗連携完了後に利用できます。' }, 403);
+      }
+      const row = await env.jos_customer_db.prepare(
+        `SELECT reservation_id, reservation_date, start_time, end_time,
+                menu_name, price, reservation_status
+           FROM customer_next_reservations
+          WHERE jos_customer_id = ?`
+      ).bind(profile.jos_customer_id).first();
+      return json({ ok: true, reservation: publicReservation(row) });
+    }
     return json({ ok: false, message: 'APIが見つかりません。' }, 404);
   } catch (error) {
     return json({ ok: false, message: String(error && error.message ? error.message : '処理に失敗しました。') }, 400);

@@ -38,6 +38,10 @@
     .waiting { margin-top:20px; padding:18px; border-radius:15px; background:#fff7e8; color:#9a4b00; }
     .waiting-title { font-size:18px; font-weight:900; }
     .waiting p { margin:7px 0 0; color:#7a4a17; line-height:1.65; }
+    .next-reservation { margin-top:20px; padding:18px; border-radius:15px; background:#eff6ff; border:1px solid #bfdbfe; }
+    .next-title { color:#1d4ed8; font-size:14px; font-weight:900; }
+    .next-date { margin-top:7px; font-size:22px; font-weight:900; }
+    .next-menu { margin-top:7px; color:#344054; font-size:16px; font-weight:800; }
     .details { margin-top:18px; border-top:1px solid var(--line); }
     .detail { display:flex; justify-content:space-between; gap:16px; padding:13px 0; border-bottom:1px solid var(--line); }
     .detail-label { color:var(--muted); }
@@ -87,6 +91,11 @@
         <div id="linkApproved" class="identity" hidden>
           <div class="identity-label">店舗連携済み</div>
           <div class="identity-name">店舗のお客様情報との連携が完了しました。</div>
+        </div>
+        <div id="nextReservation" class="next-reservation" hidden>
+          <div class="next-title">次回予約</div>
+          <div id="nextReservationDate" class="next-date"></div>
+          <div id="nextReservationMenu" class="next-menu"></div>
         </div>
         <div class="details">
           <div class="detail"><span class="detail-label">お名前</span><span id="registeredName" class="detail-value"></span></div>
@@ -143,6 +152,21 @@
       byId('saveButton').textContent = editing ? '変更内容を保存' : 'この内容で登録';
     }
 
+    async function loadNextReservation() {
+      byId('nextReservation').hidden = true;
+      try {
+        const result = await callApi('/api/next-reservation');
+        const reservation = result.reservation;
+        byId('nextReservationDate').textContent = reservation
+          ? reservation.date.replace(/-/g, '/') + '　' + reservation.startTime + (reservation.endTime ? '〜' + reservation.endTime : '')
+          : '次回予約はありません';
+        byId('nextReservationMenu').textContent = reservation ? (reservation.menu || '') : '';
+        byId('nextReservation').hidden = false;
+      } catch (_) {
+        byId('nextReservation').hidden = true;
+      }
+    }
+
     function showRegistered(profile) {
       currentProfile = profile;
       byId('registrationForm').hidden = true;
@@ -153,6 +177,7 @@
       byId('linkPending').hidden = approved;
       byId('linkApproved').hidden = !approved;
       byId('registered').hidden = false;
+      if (approved) loadNextReservation(); else byId('nextReservation').hidden = true;
     }
 
     async function loadProfile() {
