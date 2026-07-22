@@ -80,9 +80,13 @@
       </form>
 
       <div id="registered" hidden>
-        <div class="waiting">
+        <div id="linkPending" class="waiting">
           <div class="waiting-title">店舗連携の確認待ち</div>
           <p>登録を受け付けました。既存のお客様情報との連携は、店舗が確認してから有効になります。</p>
+        </div>
+        <div id="linkApproved" class="identity" hidden>
+          <div class="identity-label">店舗連携済み</div>
+          <div class="identity-name">店舗のお客様情報との連携が完了しました。</div>
         </div>
         <div class="details">
           <div class="detail"><span class="detail-label">お名前</span><span id="registeredName" class="detail-value"></span></div>
@@ -145,6 +149,9 @@
       byId('registeredName').textContent = profile.lastName + ' ' + profile.firstName;
       byId('registeredKana').textContent = profile.lastKana + ' ' + profile.firstKana;
       byId('registeredPhone').textContent = profile.phone;
+      const approved = profile.linkStatus === 'approved';
+      byId('linkPending').hidden = approved;
+      byId('linkApproved').hidden = !approved;
       byId('registered').hidden = false;
     }
 
