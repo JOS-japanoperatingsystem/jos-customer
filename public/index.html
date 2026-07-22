@@ -6,129 +6,43 @@
   <title>メンズ脱毛JAPAN 予約</title>
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <style>
-    :root {
-      --blue: #2563eb;
-      --ink: #172033;
-      --muted: #667085;
-      --panel: #ffffff;
-      --bg: #f4f7fd;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      background: var(--bg);
-      color: var(--ink);
-      font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif;
-    }
-    main {
-      width: min(100%, 560px);
-      margin: 0 auto;
-      padding: max(32px, env(safe-area-inset-top)) 18px 40px;
-    }
-    .brand {
-      color: var(--blue);
-      font-size: 18px;
-      font-weight: 900;
-      letter-spacing: .02em;
-    }
-    h1 {
-      margin: 12px 0 8px;
-      font-size: 30px;
-      line-height: 1.35;
-    }
-    .lead {
-      margin: 0;
-      color: var(--muted);
-      font-size: 16px;
-      line-height: 1.75;
-    }
-    .card {
-      margin-top: 28px;
-      padding: 24px 20px;
-      border: 1px solid #e4e7ec;
-      border-radius: 22px;
-      background: var(--panel);
-      box-shadow: 0 12px 30px rgba(35, 55, 90, .08);
-    }
-    .status {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 7px 12px;
-      border-radius: 999px;
-      background: #ecfdf3;
-      color: #027a48;
-      font-size: 14px;
-      font-weight: 900;
-    }
-    .dot {
-      width: 9px;
-      height: 9px;
-      border-radius: 50%;
-      background: #12b76a;
-    }
-    .card h2 {
-      margin: 18px 0 8px;
-      font-size: 22px;
-    }
-    .card p {
-      margin: 0;
-      color: var(--muted);
-      font-size: 15px;
-      line-height: 1.7;
-    }
-    .login-button {
-      width: 100%;
-      min-height: 58px;
-      margin-top: 20px;
-      border: 0;
-      border-radius: 15px;
-      background: #06c755;
-      color: #fff;
-      font-size: 18px;
-      font-weight: 900;
-      cursor: pointer;
-    }
-    .login-button[hidden] { display: none; }
-    .profile {
-      display: none;
-      margin-top: 20px;
-      padding: 16px;
-      border-radius: 15px;
-      background: #f0fdf4;
-    }
-    .profile.is-visible { display: block; }
-    .profile-label {
-      color: #027a48;
-      font-size: 13px;
-      font-weight: 900;
-    }
-    .profile-name {
-      margin-top: 5px;
-      font-size: 21px;
-      font-weight: 900;
-    }
-    .verified-note {
-      margin-top: 8px;
-      color: #027a48;
-      font-size: 13px;
-      font-weight: 800;
-    }
-    .error {
-      display: none;
-      margin-top: 16px;
-      color: #b42318;
-      font-size: 14px;
-      line-height: 1.6;
-    }
-    .error.is-visible { display: block; }
-    .progress {
-      margin-top: 16px;
-      color: var(--muted);
-      font-size: 14px;
-      font-weight: 700;
-    }
+    :root { --blue:#2563eb; --ink:#172033; --muted:#667085; --green:#027a48; --red:#b42318; --line:#e4e7ec; --bg:#f4f7fd; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; background:var(--bg); color:var(--ink); font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic",sans-serif; }
+    main { width:min(100%,600px); margin:0 auto; padding:max(30px,env(safe-area-inset-top)) 18px 48px; }
+    .brand { color:var(--blue); font-size:18px; font-weight:900; }
+    h1 { margin:10px 0 8px; font-size:30px; line-height:1.35; }
+    .lead,.note { margin:0; color:var(--muted); font-size:15px; line-height:1.75; }
+    .card { margin-top:25px; padding:23px 20px; border:1px solid var(--line); border-radius:22px; background:#fff; box-shadow:0 12px 30px rgba(35,55,90,.08); }
+    .status { display:inline-flex; align-items:center; gap:8px; padding:7px 12px; border-radius:999px; background:#ecfdf3; color:var(--green); font-size:14px; font-weight:900; }
+    .dot { width:9px; height:9px; border-radius:50%; background:#12b76a; }
+    h2 { margin:18px 0 8px; font-size:22px; }
+    .login-button,.primary,.secondary { width:100%; min-height:56px; margin-top:18px; border-radius:14px; font-size:17px; font-weight:900; cursor:pointer; }
+    .login-button { border:0; background:#06c755; color:#fff; }
+    .primary { border:0; background:var(--blue); color:#fff; }
+    .secondary { border:2px solid var(--blue); background:#fff; color:var(--blue); }
+    button[hidden],[hidden] { display:none !important; }
+    .progress,.error { margin-top:16px; font-size:14px; font-weight:700; line-height:1.6; }
+    .progress { color:var(--muted); }
+    .error { color:var(--red); }
+    .identity { margin-top:18px; padding:14px 16px; border-radius:14px; background:#f0fdf4; }
+    .identity-label { color:var(--green); font-size:13px; font-weight:900; }
+    .identity-name { margin-top:4px; font-size:20px; font-weight:900; }
+    .form { margin-top:22px; }
+    .form-title { margin:0 0 5px; font-size:20px; font-weight:900; }
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:16px; }
+    label { display:block; color:#344054; font-size:13px; font-weight:800; }
+    input { width:100%; height:52px; margin-top:7px; padding:0 13px; border:1px solid #d0d5dd; border-radius:12px; background:#fff; color:var(--ink); font:inherit; font-size:16px; }
+    input:focus { outline:3px solid rgba(37,99,235,.16); border-color:var(--blue); }
+    .full { grid-column:1/-1; }
+    .waiting { margin-top:20px; padding:18px; border-radius:15px; background:#fff7e8; color:#9a4b00; }
+    .waiting-title { font-size:18px; font-weight:900; }
+    .waiting p { margin:7px 0 0; color:#7a4a17; line-height:1.65; }
+    .details { margin-top:18px; border-top:1px solid var(--line); }
+    .detail { display:flex; justify-content:space-between; gap:16px; padding:13px 0; border-bottom:1px solid var(--line); }
+    .detail-label { color:var(--muted); }
+    .detail-value { text-align:right; font-weight:800; }
+    .privacy { margin-top:14px; color:var(--muted); font-size:12px; line-height:1.6; }
   </style>
 </head>
 <body>
@@ -138,87 +52,142 @@
     <p class="lead">予約・次回予約の確認・日時変更・キャンセルを、こちらから行えるようになります。</p>
 
     <section class="card">
-      <div class="status"><span class="dot"></span>限定ログインテスト</div>
+      <div class="status"><span class="dot"></span>限定登録テスト</div>
       <h2>LINEアカウントで確認</h2>
-      <p>LINEログインの接続だけを確認します。まだ予約やお客様情報の登録は行われません。</p>
+      <p class="note">LINE本人確認後、最初の一度だけお客様情報をご登録ください。</p>
       <button id="loginButton" class="login-button" type="button" hidden>LINEでログイン</button>
       <div id="progress" class="progress">LINEとの接続を確認しています…</div>
-      <div id="profile" class="profile">
-        <div class="profile-label">LINE本人確認成功</div>
-        <div id="profileName" class="profile-name"></div>
-        <div id="verifiedNote" class="verified-note"></div>
+      <div id="error" class="error" hidden></div>
+
+      <div id="identity" class="identity" hidden>
+        <div class="identity-label">LINE本人確認済み</div>
+        <div id="identityName" class="identity-name"></div>
       </div>
-      <div id="error" class="error"></div>
+
+      <form id="registrationForm" class="form" hidden>
+        <div class="form-title">お客様情報を登録</div>
+        <p class="note">店舗の顧客情報と確認するため、正確にご入力ください。</p>
+        <div class="grid">
+          <label>姓<input id="lastName" maxlength="40" autocomplete="family-name" required></label>
+          <label>名<input id="firstName" maxlength="40" autocomplete="given-name" required></label>
+          <label>セイ<input id="lastKana" maxlength="40" inputmode="kana" required></label>
+          <label>メイ<input id="firstKana" maxlength="40" inputmode="kana" required></label>
+          <label class="full">電話番号<input id="phone" type="tel" maxlength="14" inputmode="tel" autocomplete="tel" placeholder="09012345678" required></label>
+        </div>
+        <button id="saveButton" class="primary" type="submit">この内容で登録</button>
+        <button id="cancelEditButton" class="secondary" type="button" hidden>変更をやめる</button>
+        <div class="privacy">登録情報は本人確認と店舗での顧客確認に使用します。LINEの内部識別情報は画面に表示しません。</div>
+      </form>
+
+      <div id="registered" hidden>
+        <div class="waiting">
+          <div class="waiting-title">店舗連携の確認待ち</div>
+          <p>登録を受け付けました。既存のお客様情報との連携は、店舗が確認してから有効になります。</p>
+        </div>
+        <div class="details">
+          <div class="detail"><span class="detail-label">お名前</span><span id="registeredName" class="detail-value"></span></div>
+          <div class="detail"><span class="detail-label">フリガナ</span><span id="registeredKana" class="detail-value"></span></div>
+          <div class="detail"><span class="detail-label">電話番号</span><span id="registeredPhone" class="detail-value"></span></div>
+        </div>
+        <button id="editButton" class="secondary" type="button">登録内容を変更</button>
+      </div>
     </section>
   </main>
+
   <script>
     const LIFF_ID = '2010784641-JegLxj1v';
+    let currentIdToken = '';
+    let currentProfile = null;
 
-    function showError(message) {
-      const error = document.getElementById('error');
-      error.textContent = message;
-      error.classList.add('is-visible');
-      document.getElementById('progress').textContent = '';
-    }
+    const byId = id => document.getElementById(id);
+    function setProgress(message) { byId('progress').textContent = message || ''; }
+    function showError(message) { byId('error').textContent = message; byId('error').hidden = false; setProgress(''); }
+    function clearError() { byId('error').hidden = true; byId('error').textContent = ''; }
 
-    function setProgress(message) {
-      document.getElementById('progress').textContent = message;
-    }
-
-    async function verifyWithServer(idToken) {
-      const response = await fetch('/api/verify-line', {
+    async function callApi(path, extra) {
+      const response = await fetch(path, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ idToken })
+        headers: { 'content-type':'application/json' },
+        body: JSON.stringify(Object.assign({ idToken:currentIdToken }, extra || {}))
       });
-
-      if (!response.ok) {
-        throw new Error('安全確認用サーバーに接続できませんでした。');
-      }
-      const result = await response.json();
-      if (!result.ok) {
-        throw new Error(String(result.message || 'LINE本人確認に失敗しました。'));
-      }
+      let result;
+      try { result = await response.json(); } catch (_) { throw new Error('サーバーの応答を確認できませんでした。'); }
+      if (!response.ok || !result.ok) throw new Error(String(result.message || '処理に失敗しました。'));
       return result;
+    }
+
+    function formProfile() {
+      return {
+        lastName:byId('lastName').value,
+        firstName:byId('firstName').value,
+        lastKana:byId('lastKana').value,
+        firstKana:byId('firstKana').value,
+        phone:byId('phone').value
+      };
+    }
+
+    function fillForm(profile) {
+      const p = profile || {};
+      ['lastName','firstName','lastKana','firstKana','phone'].forEach(key => { byId(key).value = p[key] || ''; });
+    }
+
+    function showForm(profile, editing) {
+      fillForm(profile);
+      byId('registered').hidden = true;
+      byId('registrationForm').hidden = false;
+      byId('cancelEditButton').hidden = !editing;
+      byId('saveButton').textContent = editing ? '変更内容を保存' : 'この内容で登録';
+    }
+
+    function showRegistered(profile) {
+      currentProfile = profile;
+      byId('registrationForm').hidden = true;
+      byId('registeredName').textContent = profile.lastName + ' ' + profile.firstName;
+      byId('registeredKana').textContent = profile.lastKana + ' ' + profile.firstKana;
+      byId('registeredPhone').textContent = profile.phone;
+      byId('registered').hidden = false;
+    }
+
+    async function loadProfile() {
+      setProgress('登録情報を確認しています…');
+      const result = await callApi('/api/profile');
+      setProgress('');
+      if (result.exists) showRegistered(result.profile); else showForm(null, false);
     }
 
     async function startLiff() {
       try {
-        setProgress('LINEを初期化しています…');
-        await liff.init({
-          liffId: LIFF_ID,
-          withLoginOnExternalBrowser: true
-        });
-
+        await liff.init({ liffId:LIFF_ID, withLoginOnExternalBrowser:true });
         if (!liff.isLoggedIn()) {
           setProgress('LINEログインが必要です');
-          const button = document.getElementById('loginButton');
-          button.hidden = false;
-          button.addEventListener('click', function() {
-            liff.login({ redirectUri: window.location.href });
-          });
+          byId('loginButton').hidden = false;
+          byId('loginButton').onclick = () => liff.login({ redirectUri:window.location.origin + window.location.pathname });
           return;
         }
-
+        currentIdToken = liff.getIDToken() || '';
+        if (!currentIdToken) throw new Error('LINE認証情報を取得できませんでした。');
         setProgress('LINE本人情報を安全に確認しています…');
-        const idToken = liff.getIDToken();
-        if (!idToken) throw new Error('LINE認証情報を取得できませんでした。');
-        const verified = await verifyWithServer(idToken);
-        if (!verified.ok) throw new Error(String(verified.message || 'LINE本人確認に失敗しました。'));
-        document.getElementById('profileName').textContent =
-          String(verified.displayName || '') + ' さん';
-        document.getElementById('verifiedNote').textContent =
-          'LINE公式サーバーで確認済み ' + String(verified.verifiedAt || '');
-        document.getElementById('profile').classList.add('is-visible');
-        setProgress('');
+        const verified = await callApi('/api/verify-line');
+        byId('identityName').textContent = String(verified.displayName || '') + ' さん';
+        byId('identity').hidden = false;
+        await loadProfile();
       } catch (error) {
-        const detail = error && error.message ? String(error.message) : String(error || '不明なエラー');
-        showError('LINEログインの確認に失敗しました：' + detail);
+        showError('確認に失敗しました：' + String(error && error.message ? error.message : error));
       }
     }
 
+    byId('registrationForm').addEventListener('submit', async event => {
+      event.preventDefault(); clearError();
+      const button = byId('saveButton'); button.disabled = true; setProgress('安全に登録しています…');
+      try {
+        const result = await callApi('/api/profile/save', { profile:formProfile() });
+        setProgress(''); showRegistered(result.profile);
+      } catch (error) { showError(String(error.message || error)); }
+      finally { button.disabled = false; }
+    });
+    byId('editButton').addEventListener('click', () => showForm(currentProfile, true));
+    byId('cancelEditButton').addEventListener('click', () => showRegistered(currentProfile));
     startLiff();
   </script>
 </body>
 </html>
-

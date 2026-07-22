@@ -12,72 +12,166 @@ function json(data, status = 200) {
   });
 }
 
-async function verifyLine(request) {
+async function readJson(request) {
+  const contentLength = Number(request.headers.get('content-length') || 0);
+  if (contentLength > 20000) throw new Error('送信データが大きすぎます。');
+  try {
+    return await request.json();
+  } catch (_) {
+    throw new Error('送信形式が正しくありません。');
+  }
+}
+
+function checkSameOrigin(request) {
   const requestUrl = new URL(request.url);
   const origin = request.headers.get('origin');
-  if (origin && origin !== requestUrl.origin) {
-    return json({ ok: false, message: '許可されていない接続元です。' }, 403);
-  }
+  return !origin || origin === requestUrl.origin;
+}
 
-  const contentLength = Number(request.headers.get('content-length') || 0);
-  if (contentLength > 20000) {
-    return json({ ok: false, message: '送信データが大きすぎます。' }, 413);
-  }
-
-  let body;
-  try {
-    body = await request.json();
-  } catch (_) {
-    return json({ ok: false, message: '送信形式が正しくありません。' }, 400);
-  }
-
-  const idToken = typeof body.idToken === 'string' ? body.idToken.trim() : '';
+async function verifyLineIdToken(idToken) {
+  idToken = typeof idToken === 'string' ? idToken.trim() : '';
   if (!idToken || idToken.length > 10000) {
-    return json({ ok: false, message: 'LINE認証情報を取得できませんでした。' }, 400);
+    throw new Error('LINE認証情報を取得できませんでした。');
   }
 
   const form = new URLSearchParams();
   form.set('id_token', idToken);
   form.set('client_id', LINE_CHANNEL_ID);
 
-  let lineResponse;
+  let response;
   try {
-    lineResponse = await fetch('https://api.line.me/oauth2/v2.1/verify', {
+    response = await fetch('https://api.line.me/oauth2/v2.1/verify', {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: form
     });
   } catch (_) {
-    return json({ ok: false, message: 'LINE公式サーバーへ接続できませんでした。' }, 502);
+    throw new Error('LINE公式サーバーへ接続できませんでした。');
   }
 
   let verified;
   try {
-    verified = await lineResponse.json();
+    verified = await response.json();
   } catch (_) {
-    return json({ ok: false, message: 'LINE公式サーバーの応答を確認できませんでした。' }, 502);
+    throw new Error('LINE公式サーバーの応答を確認できませんでした。');
   }
 
-  if (!lineResponse.ok || !verified || !verified.sub || String(verified.aud) !== LINE_CHANNEL_ID) {
-    return json({ ok: false, message: 'LINE本人確認に失敗しました。もう一度ログインしてください。' }, 401);
+  if (!response.ok || !verified || !verified.sub || String(verified.aud) !== LINE_CHANNEL_ID) {
+    throw new Error('LINE本人確認に失敗しました。もう一度ログインしてください。');
   }
 
-  return json({
-    ok: true,
-    displayName: String(verified.name || ''),
-    verifiedAt: new Date().toISOString()
-  });
+  return {
+    sub: String(verified.sub),
+    displayName: String(verified.name || '')
+  };
+}
+
+function normalizeText(value, maxLength) {
+  return String(value || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, maxLength);
+}
+
+function validateProfile(input) {
+  const profile = {
+    lastName: normalizeText(input.lastName, 40),
+    firstName: normalizeText(input.firstName, 40),
+    lastKana: normalizeText(input.lastKana, 40),
+    firstKana: normalizeText(input.firstKana, 40),
+    phone: String(input.phone || '').replace(/[^0-9]/g, '')
+  };
+
+  if (!profile.lastName || !profile.firstName) throw new Error('姓と名を入力してください。');
+  if (!profile.lastKana || !profile.firstKana) throw new Error('セイとメイを入力してください。');
+  const kana = profile.lastKana + profile.firstKana;
+  if (!/^[ァ-ヶー・\s]+$/.test(kana)) throw new Error('フリガナはカタカナで入力してください。');
+  if (!/^0\d{9,10}$/.test(profile.phone)) throw new Error('電話番号を正しく入力してください。');
+  return profile;
+}
+
+function publicProfile(row) {
+  if (!row) return null;
+  return {
+    lastName: row.last_name,
+    firstName: row.first_name,
+    lastKana: row.last_kana,
+    firstKana: row.first_kana,
+    phone: row.phone,
+    linkStatus: row.link_status,
+    customerId: row.link_status === 'approved' ? row.jos_customer_id : ''
+  };
+}
+
+async function getProfile(env, identity) {
+  const row = await env.jos_customer_db.prepare(
+    `SELECT last_name, first_name, last_kana, first_kana, phone,
+            link_status, jos_customer_id
+       FROM customer_profiles
+      WHERE line_sub = ?`
+  ).bind(identity.sub).first();
+  return json({ ok: true, exists: Boolean(row), profile: publicProfile(row) });
+}
+
+async function saveProfile(env, identity, input) {
+  const profile = validateProfile(input);
+  const now = new Date().toISOString();
+  const existing = await env.jos_customer_db.prepare(
+    'SELECT link_status FROM customer_profiles WHERE line_sub = ?'
+  ).bind(identity.sub).first();
+
+  if (existing && existing.link_status === 'approved') {
+    return json({ ok: false, message: '連携済みの情報変更は次の開発段階で対応します。' }, 409);
+  }
+
+  await env.jos_customer_db.prepare(
+    `INSERT INTO customer_profiles
+       (line_sub, line_display_name, last_name, first_name, last_kana,
+        first_kana, phone, link_status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+     ON CONFLICT(line_sub) DO UPDATE SET
+       line_display_name = excluded.line_display_name,
+       last_name = excluded.last_name,
+       first_name = excluded.first_name,
+       last_kana = excluded.last_kana,
+       first_kana = excluded.first_kana,
+       phone = excluded.phone,
+       updated_at = excluded.updated_at`
+  ).bind(
+    identity.sub,
+    identity.displayName,
+    profile.lastName,
+    profile.firstName,
+    profile.lastKana,
+    profile.firstKana,
+    profile.phone,
+    now,
+    now
+  ).run();
+
+  return json({ ok: true, profile: { ...profile, linkStatus: 'pending', customerId: '' } });
+}
+
+async function api(request, env, pathname) {
+  if (request.method !== 'POST') return json({ ok: false, message: 'POSTのみ利用できます。' }, 405);
+  if (!checkSameOrigin(request)) return json({ ok: false, message: '許可されていない接続元です。' }, 403);
+
+  try {
+    const body = await readJson(request);
+    const identity = await verifyLineIdToken(body.idToken);
+
+    if (pathname === '/api/verify-line') {
+      return json({ ok: true, displayName: identity.displayName, verifiedAt: new Date().toISOString() });
+    }
+    if (pathname === '/api/profile') return getProfile(env, identity);
+    if (pathname === '/api/profile/save') return saveProfile(env, identity, body.profile || {});
+    return json({ ok: false, message: 'APIが見つかりません。' }, 404);
+  } catch (error) {
+    return json({ ok: false, message: String(error && error.message ? error.message : '処理に失敗しました。') }, 400);
+  }
 }
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname === '/api/verify-line') {
-      if (request.method !== 'POST') {
-        return json({ ok: false, message: 'POSTのみ利用できます。' }, 405);
-      }
-      return verifyLine(request);
-    }
+    if (url.pathname.startsWith('/api/')) return api(request, env, url.pathname);
     return env.ASSETS.fetch(request);
   }
 };
