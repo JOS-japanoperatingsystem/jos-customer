@@ -95,8 +95,7 @@ function publicProfile(row) {
     lastKana: row.last_kana,
     firstKana: row.first_kana,
     phone: row.phone,
-    linkStatus: row.link_status,
-    customerId: row.link_status === 'approved' ? row.jos_customer_id : ''
+    linkStatus: row.link_status
   };
 }
 
@@ -121,11 +120,13 @@ async function saveProfile(env, identity, input) {
     return json({ ok: false, message: '連携済みの情報変更は次の開発段階で対応します。' }, 409);
   }
 
+  const approvalKey = crypto.randomUUID().replace(/-/g, '');
+
   await env.jos_customer_db.prepare(
     `INSERT INTO customer_profiles
        (line_sub, line_display_name, last_name, first_name, last_kana,
-        first_kana, phone, link_status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+        first_kana, phone, link_status, approval_key, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
      ON CONFLICT(line_sub) DO UPDATE SET
        line_display_name = excluded.line_display_name,
        last_name = excluded.last_name,
@@ -142,11 +143,75 @@ async function saveProfile(env, identity, input) {
     profile.lastKana,
     profile.firstKana,
     profile.phone,
+    approvalKey,
     now,
     now
   ).run();
 
-  return json({ ok: true, profile: { ...profile, linkStatus: 'pending', customerId: '' } });
+  return json({ ok: true, profile: { ...profile, linkStatus: 'pending' } });
+}
+
+function adminAuthorized(request, env) {
+  const expected = String(env.JOS_ADMIN_SECRET || '');
+  const supplied = String(request.headers.get('authorization') || '');
+  return expected.length >= 32 && supplied === `Bearer ${expected}`;
+}
+
+async function adminApi(request, env, pathname) {
+  if (request.method !== 'POST') return json({ ok: false, message: 'POSTのみ利用できます。' }, 405);
+  if (!adminAuthorized(request, env)) return json({ ok: false, message: '管理認証に失敗しました。' }, 401);
+
+  try {
+    if (pathname === '/api/admin/pending') {
+      const result = await env.jos_customer_db.prepare(
+        `SELECT approval_key, line_display_name, last_name, first_name,
+                last_kana, first_kana, phone, created_at, updated_at
+           FROM customer_profiles
+          WHERE link_status = 'pending'
+          ORDER BY created_at ASC
+          LIMIT 100`
+      ).all();
+
+      return json({
+        ok: true,
+        profiles: (result.results || []).map(row => ({
+          approvalKey: row.approval_key,
+          lineDisplayName: row.line_display_name,
+          lastName: row.last_name,
+          firstName: row.first_name,
+          lastKana: row.last_kana,
+          firstKana: row.first_kana,
+          phone: row.phone,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at
+        }))
+      });
+    }
+
+    if (pathname === '/api/admin/approve') {
+      const body = await readJson(request);
+      const approvalKey = normalizeText(body.approvalKey, 80);
+      const customerId = normalizeText(body.customerId, 80);
+      if (!approvalKey || !customerId) throw new Error('連携対象が正しくありません。');
+
+      const now = new Date().toISOString();
+      const result = await env.jos_customer_db.prepare(
+        `UPDATE customer_profiles
+            SET link_status = 'approved', jos_customer_id = ?,
+                approved_at = ?, updated_at = ?
+          WHERE approval_key = ? AND link_status = 'pending'`
+      ).bind(customerId, now, now, approvalKey).run();
+
+      if (!result.meta || Number(result.meta.changes || 0) !== 1) {
+        return json({ ok: false, message: '対象が見つからないか、すでに連携済みです。' }, 409);
+      }
+      return json({ ok: true });
+    }
+
+    return json({ ok: false, message: '管理APIが見つかりません。' }, 404);
+  } catch (error) {
+    return json({ ok: false, message: String(error && error.message ? error.message : '処理に失敗しました。') }, 400);
+  }
 }
 
 async function api(request, env, pathname) {
@@ -171,6 +236,7 @@ async function api(request, env, pathname) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.pathname.startsWith('/api/admin/')) return adminApi(request, env, url.pathname);
     if (url.pathname.startsWith('/api/')) return api(request, env, url.pathname);
     return env.ASSETS.fetch(request);
   }
