@@ -10,6 +10,7 @@
     * { box-sizing:border-box; }
     body { margin:0; min-height:100vh; background:var(--bg); color:var(--ink); font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic",sans-serif; }
     main { width:min(100%,600px); margin:0 auto; padding:max(30px,env(safe-area-inset-top)) 18px 48px; }
+    body.app-ready main { padding-bottom:calc(104px + env(safe-area-inset-bottom)); }
     .brand { color:var(--blue); font-size:18px; font-weight:900; }
     h1 { margin:10px 0 8px; font-size:30px; line-height:1.35; }
     .lead,.note { margin:0; color:var(--muted); font-size:15px; line-height:1.75; }
@@ -47,26 +48,38 @@
     .detail-label { color:var(--muted); }
     .detail-value { text-align:right; font-weight:800; }
     .privacy { margin-top:14px; color:var(--muted); font-size:12px; line-height:1.6; }
+    .view-title { margin:0 0 14px; font-size:25px; }
+    .home-greeting { margin:0 0 4px; color:var(--muted); font-size:14px; font-weight:800; }
+    .home-name { margin:0 0 18px; font-size:27px; font-weight:900; }
+    .empty-panel { padding:26px 18px; border:1px solid var(--line); border-radius:16px; background:#fff; text-align:center; }
+    .empty-panel strong { display:block; font-size:18px; }
+    .empty-panel span { display:block; margin-top:8px; color:var(--muted); line-height:1.65; }
+    .mypage-section { margin-top:18px; padding-top:18px; border-top:1px solid var(--line); }
+    .mypage-section-title { margin:0 0 10px; font-size:16px; font-weight:900; }
+    .connection-row { display:flex; justify-content:space-between; gap:12px; padding:13px 0; border-bottom:1px solid var(--line); }
+    .connection-state { color:var(--green); font-weight:900; text-align:right; }
+    .bottom-nav { position:fixed; z-index:20; left:50%; bottom:0; transform:translateX(-50%); width:min(100%,600px); display:grid; grid-template-columns:repeat(4,1fr); padding:8px 8px calc(8px + env(safe-area-inset-bottom)); border:1px solid var(--line); border-bottom:0; border-radius:22px 22px 0 0; background:rgba(255,255,255,.97); box-shadow:0 -8px 24px rgba(35,55,90,.10); }
+    .nav-button { min-width:0; min-height:60px; border:0; border-radius:15px; background:transparent; color:#667085; font:inherit; font-size:12px; font-weight:900; cursor:pointer; }
+    .nav-icon { display:block; margin-bottom:3px; font-size:23px; line-height:1; }
+    .nav-button.active { background:#eff6ff; color:var(--blue); }
+    @media (max-width:380px) { .nav-button { font-size:11px; } }
   </style>
 </head>
 <body>
   <main>
-    <div class="brand">メンズ脱毛 JAPAN</div>
-    <h1>お客様用予約ページ</h1>
-    <p class="lead">予約・次回予約の確認・日時変更・キャンセルを、こちらから行えるようになります。</p>
+    <header id="intro">
+      <div class="brand">メンズ脱毛 JAPAN</div>
+      <h1>お客様用予約ページ</h1>
+      <p class="lead">予約・次回予約の確認・日時変更・キャンセルを、こちらから行えるようになります。</p>
+    </header>
 
-    <section class="card">
+    <section id="setupCard" class="card">
       <div class="status"><span class="dot"></span>限定登録テスト</div>
       <h2>LINEアカウントで確認</h2>
       <p class="note">LINE本人確認後、最初の一度だけお客様情報をご登録ください。</p>
       <button id="loginButton" class="login-button" type="button" hidden>LINEでログイン</button>
       <div id="progress" class="progress">LINEとの接続を確認しています…</div>
       <div id="error" class="error" hidden></div>
-
-      <div id="identity" class="identity" hidden>
-        <div class="identity-label">LINE本人確認済み</div>
-        <div id="identityName" class="identity-name"></div>
-      </div>
 
       <form id="registrationForm" class="form" hidden>
         <div class="form-title">お客様情報を登録</div>
@@ -82,30 +95,60 @@
         <button id="cancelEditButton" class="secondary" type="button" hidden>変更をやめる</button>
         <div class="privacy">登録情報は本人確認と店舗での顧客確認に使用します。LINEの内部識別情報は画面に表示しません。</div>
       </form>
+    </section>
 
-      <div id="registered" hidden>
+    <section id="registered" hidden>
+      <div id="homeView" class="card">
+        <p class="home-greeting">こんにちは</p>
+        <div id="homeName" class="home-name"></div>
         <div id="linkPending" class="waiting">
           <div class="waiting-title">店舗連携の確認待ち</div>
           <p>登録を受け付けました。既存のお客様情報との連携は、店舗が確認してから有効になります。</p>
-        </div>
-        <div id="linkApproved" class="identity" hidden>
-          <div class="identity-label">店舗連携済み</div>
-          <div class="identity-name">店舗のお客様情報との連携が完了しました。</div>
         </div>
         <div id="nextReservation" class="next-reservation" hidden>
           <div class="next-title">次回予約</div>
           <div id="nextReservationDate" class="next-date"></div>
           <div id="nextReservationMenu" class="next-menu"></div>
         </div>
-        <div class="details">
+      </div>
+
+      <div id="bookingView" class="card" hidden>
+        <h2 class="view-title">予約する</h2>
+        <div class="empty-panel"><strong>予約機能を準備中です</strong><span>メニューと空き時間を選んで、その場で予約できる画面を作成しています。</span></div>
+      </div>
+
+      <div id="historyView" class="card" hidden>
+        <h2 class="view-title">予約履歴</h2>
+        <div class="empty-panel"><strong>予約履歴を準備中です</strong><span>今後の予約確認・日時変更・キャンセルはこちらにまとめます。</span></div>
+      </div>
+
+      <div id="mypageView" class="card" hidden>
+        <h2 class="view-title">マイページ</h2>
+        <div class="mypage-section">
+          <div class="mypage-section-title">連携状況</div>
+          <div class="connection-row"><span>LINE連携</span><span class="connection-state">本人確認済み</span></div>
+          <div class="connection-row"><span>店舗連携</span><span id="mypageLinkState" class="connection-state"></span></div>
+          <div id="identity" class="connection-row" hidden><span>LINE表示名</span><span id="identityName" class="connection-state"></span></div>
+        </div>
+        <div class="mypage-section">
+          <div class="mypage-section-title">お客様情報</div>
+          <div class="details">
           <div class="detail"><span class="detail-label">お名前</span><span id="registeredName" class="detail-value"></span></div>
           <div class="detail"><span class="detail-label">フリガナ</span><span id="registeredKana" class="detail-value"></span></div>
           <div class="detail"><span class="detail-label">電話番号</span><span id="registeredPhone" class="detail-value"></span></div>
+          </div>
         </div>
         <button id="editButton" class="secondary" type="button">登録内容を変更</button>
       </div>
     </section>
   </main>
+
+  <nav id="bottomNav" class="bottom-nav" aria-label="お客様メニュー" hidden>
+    <button class="nav-button active" data-view="home" type="button"><span class="nav-icon">⌂</span>ホーム</button>
+    <button class="nav-button" data-view="booking" type="button"><span class="nav-icon">＋</span>予約する</button>
+    <button class="nav-button" data-view="history" type="button"><span class="nav-icon">▦</span>予約履歴</button>
+    <button class="nav-button" data-view="mypage" type="button"><span class="nav-icon">☰</span>マイページ</button>
+  </nav>
 
   <script>
     const LIFF_ID = '2010784641-JegLxj1v';
@@ -144,8 +187,29 @@
       ['lastName','firstName','lastKana','firstKana','phone'].forEach(key => { byId(key).value = p[key] || ''; });
     }
 
+    const viewIds = {
+      home:'homeView',
+      booking:'bookingView',
+      history:'historyView',
+      mypage:'mypageView'
+    };
+
+    function switchView(viewName) {
+      Object.entries(viewIds).forEach(([name, id]) => {
+        byId(id).hidden = name !== viewName;
+      });
+      document.querySelectorAll('.nav-button').forEach(button => {
+        button.classList.toggle('active', button.dataset.view === viewName);
+      });
+      window.scrollTo({ top:0, behavior:'smooth' });
+    }
+
     function showForm(profile, editing) {
       fillForm(profile);
+      document.body.classList.remove('app-ready');
+      byId('intro').hidden = !!editing;
+      byId('setupCard').hidden = false;
+      byId('bottomNav').hidden = true;
       byId('registered').hidden = true;
       byId('registrationForm').hidden = false;
       byId('cancelEditButton').hidden = !editing;
@@ -169,14 +233,21 @@
 
     function showRegistered(profile) {
       currentProfile = profile;
+      document.body.classList.add('app-ready');
+      byId('intro').hidden = true;
+      byId('setupCard').hidden = true;
       byId('registrationForm').hidden = true;
+      byId('homeName').textContent = profile.lastName + ' ' + profile.firstName + ' 様';
       byId('registeredName').textContent = profile.lastName + ' ' + profile.firstName;
       byId('registeredKana').textContent = profile.lastKana + ' ' + profile.firstKana;
       byId('registeredPhone').textContent = profile.phone;
       const approved = profile.linkStatus === 'approved';
       byId('linkPending').hidden = approved;
-      byId('linkApproved').hidden = !approved;
+      byId('mypageLinkState').textContent = approved ? '連携済み' : '確認待ち';
+      byId('mypageLinkState').style.color = approved ? 'var(--green)' : '#9a4b00';
       byId('registered').hidden = false;
+      byId('bottomNav').hidden = false;
+      switchView('home');
       if (approved) loadNextReservation(); else byId('nextReservation').hidden = true;
     }
 
@@ -219,6 +290,9 @@
     });
     byId('editButton').addEventListener('click', () => showForm(currentProfile, true));
     byId('cancelEditButton').addEventListener('click', () => showRegistered(currentProfile));
+    document.querySelectorAll('.nav-button').forEach(button => {
+      button.addEventListener('click', () => switchView(button.dataset.view));
+    });
     startLiff();
   </script>
 </body>
