@@ -1,11 +1,20 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "jos-customer",
-  "main": "src/worker.js",
-  "compatibility_date": "2026-07-21",
-  "assets": {
-    "directory": "./public",
-    "binding": "ASSETS",
-    "run_worker_first": ["/api/*"]
-  }
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "jos-customer",
+	"main": "src/worker.js",
+	"compatibility_date": "2026-07-21",
+	"assets": {
+		"directory": "./public",
+		"binding": "ASSETS",
+		"run_worker_first": [
+			"/api/*"
+		]
+	},
+	"d1_databases": [
+		{
+			"binding": "jos_customer_db",
+			"database_name": "jos-customer-db",
+			"database_id": "8a600a3d-fcfc-4963-af50-1d321299ea90"
+		}
+	]
 }
