@@ -70,6 +70,29 @@ function normalizeText(value, maxLength) {
   return String(value || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, maxLength);
 }
 
+function validateCustomerBookingDate(date) {
+  date = normalizeText(date, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new Error('予約日が正しくありません。');
+  }
+  const parsedDate = new Date(`${date}T00:00:00Z`);
+  if (isNaN(parsedDate.getTime()) ||
+      parsedDate.toISOString().slice(0, 10) !== date) {
+    throw new Error('予約日が正しくありません。');
+  }
+  const tokyoNow = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  const today = tokyoNow.toISOString().slice(0, 10);
+  const maxDate = new Date(Date.UTC(
+    tokyoNow.getUTCFullYear(),
+    tokyoNow.getUTCMonth(),
+    tokyoNow.getUTCDate() + 90
+  )).toISOString().slice(0, 10);
+  if (date < today || date > maxDate) {
+    throw new Error('予約日は本日から90日以内で選択してください。');
+  }
+  return date;
+}
+
 function validateProfile(input) {
   const profile = {
     lastName: normalizeText(input.lastName, 40),
@@ -761,9 +784,8 @@ async function api(request, env, pathname) {
         return json({ ok: false, message: '店舗連携完了後に利用できます。' }, 403);
       }
 
-      const date = normalizeText(body.date, 10);
+      const date = validateCustomerBookingDate(body.date);
       const treatmentMinutes = Math.max(1, Math.min(780, Math.round(Number(body.treatmentMinutes || 0))));
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('予約日が正しくありません。');
 
       const result = await env.jos_customer_db.prepare(
         `SELECT start_time, end_time FROM availability_busy
@@ -820,14 +842,29 @@ async function api(request, env, pathname) {
           message: '現在オンライン予約をご利用いただけません。店舗へお問い合わせください。'
         }, 403);
       }
+      const existingReservation = await env.jos_customer_db.prepare(
+        `SELECT reservation_id FROM customer_next_reservations
+          WHERE jos_customer_id = ?
+          LIMIT 1`
+      ).bind(profile.jos_customer_id).first();
+      const pendingBooking = await env.jos_customer_db.prepare(
+        `SELECT request_id FROM customer_booking_requests
+          WHERE jos_customer_id = ? AND status = 'pending'
+          LIMIT 1`
+      ).bind(profile.jos_customer_id).first();
+      if (existingReservation || pendingBooking) {
+        return json({
+          ok: false,
+          message: '現在の予約があります。「予約確認」から日時変更またはキャンセルを行ってください。'
+        }, 409);
+      }
 
       const menuIds = Array.isArray(body.menuIds)
         ? [...new Set(body.menuIds.map(value => normalizeText(value, 80)).filter(Boolean))].slice(0, 30)
         : [];
-      const date = normalizeText(body.date, 10);
+      const date = validateCustomerBookingDate(body.date);
       const startTime = normalizeText(body.startTime, 5);
       if (!menuIds.length) throw new Error('メニューを選択してください。');
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('予約日が正しくありません。');
       if (!/^\d{2}:\d{2}$/.test(startTime)) throw new Error('開始時間が正しくありません。');
 
       const placeholders = menuIds.map(() => '?').join(',');
@@ -850,6 +887,12 @@ async function api(request, env, pathname) {
       const end = start + treatmentTime;
       if (treatmentTime <= 0 || start < 10 * 60 || end > 23 * 60 || start % 30 !== 0) {
         throw new Error('選択された予約時間を確認できませんでした。');
+      }
+      const tokyoNow = new Date(Date.now() + 9 * 60 * 60 * 1000);
+      const tokyoToday = tokyoNow.toISOString().slice(0, 10);
+      const currentMinutes = tokyoNow.getUTCHours() * 60 + tokyoNow.getUTCMinutes();
+      if (date === tokyoToday && start <= currentMinutes) {
+        throw new Error('過ぎた時間は予約できません。');
       }
       const endTime = `${String(Math.floor(end / 60)).padStart(2, '0')}:${String(end % 60).padStart(2, '0')}`;
       const requestId = crypto.randomUUID().replace(/-/g, '');
@@ -931,8 +974,7 @@ async function api(request, env, pathname) {
         return json({ ok: false, message: '店舗連携完了後に利用できます。' }, 403);
       }
       const reservationId = normalizeText(body.reservationId, 80);
-      const date = normalizeText(body.date, 10);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('予約日が正しくありません。');
+      const date = validateCustomerBookingDate(body.date);
       const reservation = await env.jos_customer_db.prepare(
         `SELECT reservation_date, start_time, end_time FROM customer_next_reservations
           WHERE jos_customer_id = ? AND reservation_id = ?`
@@ -1002,9 +1044,8 @@ async function api(request, env, pathname) {
       }
 
       const reservationId = normalizeText(body.reservationId, 80);
-      const date = normalizeText(body.date, 10);
+      const date = validateCustomerBookingDate(body.date);
       const startTime = normalizeText(body.startTime, 5);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('予約日が正しくありません。');
       if (!/^\d{2}:\d{2}$/.test(startTime)) throw new Error('開始時間が正しくありません。');
       const reservation = await env.jos_customer_db.prepare(
         `SELECT reservation_date, start_time, end_time FROM customer_next_reservations
@@ -1023,6 +1064,12 @@ async function api(request, env, pathname) {
       const end = start + treatmentMinutes;
       if (treatmentMinutes <= 0 || start < 10 * 60 || end > 23 * 60 || start % 30 !== 0) {
         throw new Error('変更後の時間を確認できませんでした。');
+      }
+      const tokyoNow = new Date(Date.now() + 9 * 60 * 60 * 1000);
+      const tokyoToday = tokyoNow.toISOString().slice(0, 10);
+      const currentMinutes = tokyoNow.getUTCHours() * 60 + tokyoNow.getUTCMinutes();
+      if (date === tokyoToday && start <= currentMinutes) {
+        throw new Error('過ぎた時間には変更できません。');
       }
       const endTime = `${String(Math.floor(end / 60)).padStart(2, '0')}:${String(end % 60).padStart(2, '0')}`;
       const actionId = crypto.randomUUID().replace(/-/g, '');

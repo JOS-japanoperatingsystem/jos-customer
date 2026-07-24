@@ -300,6 +300,7 @@
     let currentReservationActionId = '';
     let selectedChangeTime = '';
     let currentProfileUpdateRequestId = '';
+    let currentNextReservation = null;
 
     const byId = id => document.getElementById(id);
     function setProgress(message) { byId('progress').textContent = message || ''; }
@@ -564,7 +565,11 @@
     }
 
     async function loadMenus() {
-      if (menusLoading || menusLoaded) return;
+      if (menusLoading) return;
+      if (menusLoaded) {
+        renderMenus();
+        return;
+      }
       menusLoading = true;
       byId('menuLoading').hidden = false;
       byId('menuError').hidden = true;
@@ -588,7 +593,11 @@
         button.classList.toggle('active', button.dataset.view === viewName);
       });
       if (viewName === 'booking') {
-        if (currentProfile && currentProfile.linkStatus === 'approved') loadMenus();
+        if (currentNextReservation) {
+          showMenuError(
+            '現在の予約があります。「予約確認」から日時変更またはキャンセルを行ってください。'
+          );
+        } else if (currentProfile && currentProfile.linkStatus === 'approved') loadMenus();
         else showMenuError('店舗連携完了後にメニューを選択できます。');
       }
       if (viewName === 'history') loadReservationManagement();
@@ -612,12 +621,14 @@
       try {
         const result = await callApi('/api/next-reservation');
         const reservation = result.reservation;
+        currentNextReservation = reservation || null;
         byId('nextReservationDate').textContent = reservation
           ? reservation.date.replace(/-/g, '/') + '　' + reservation.startTime + (reservation.endTime ? '〜' + reservation.endTime : '')
           : '次回予約はありません';
         byId('nextReservationMenu').textContent = reservation ? (reservation.menu || '') : '';
         byId('nextReservation').hidden = false;
       } catch (_) {
+        currentNextReservation = null;
         byId('nextReservation').hidden = true;
       }
     }
