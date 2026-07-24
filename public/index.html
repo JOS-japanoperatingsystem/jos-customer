@@ -111,6 +111,8 @@
     .reservation-manage-menu { margin-top:8px; color:#344054; font-weight:800; }
     .danger-button { width:100%; min-height:54px; margin-top:18px; border:2px solid #f04438; border-radius:14px; background:#fff; color:#b42318; font:inherit; font-size:16px; font-weight:900; }
     .action-message { margin-top:14px; color:var(--muted); font-weight:800; line-height:1.65; }
+    .change-panel { margin-top:18px; padding:16px; border:1px solid #bfdbfe; border-radius:16px; background:#f8fbff; }
+    .change-panel-title { font-size:18px; font-weight:900; }
     .customer-modal { position:fixed; z-index:100; inset:0; display:grid; place-items:center; padding:24px; background:rgba(17,24,39,.55); }
     .customer-modal-card { width:min(100%,480px); padding:24px 20px; border-radius:22px; background:#fff; box-shadow:0 24px 60px rgba(0,0,0,.25); }
     .customer-modal-title { margin:0; font-size:22px; font-weight:900; }
@@ -215,6 +217,17 @@
         <div id="reservationManage" class="reservation-manage" hidden>
           <div id="reservationManageDate" class="reservation-manage-date"></div>
           <div id="reservationManageMenu" class="reservation-manage-menu"></div>
+          <button id="customerChangeButton" class="primary" type="button">予約日時を変更する</button>
+          <section id="reservationChangePanel" class="change-panel" hidden>
+            <div class="change-panel-title">変更後の日時を選択</div>
+            <label class="date-field-label" for="changeDate">予約日（タップして変更）</label>
+            <input id="changeDate" class="date-input" type="date">
+            <div id="changeSlotMessage" class="slot-message">予約日を選択してください。</div>
+            <div id="changeSlotGrid" class="slot-grid" hidden></div>
+            <div id="selectedChangeSlot" class="selected-slot" hidden></div>
+            <button id="confirmChangeSelectionButton" class="primary" type="button" hidden>この日時に変更する</button>
+            <button id="closeChangePanelButton" class="secondary" type="button">日時変更をやめる</button>
+          </section>
           <button id="customerCancelButton" class="danger-button" type="button">この予約をキャンセル</button>
           <div id="reservationActionMessage" class="action-message"></div>
         </div>
@@ -263,6 +276,15 @@
     </div>
   </div>
 
+  <div id="changeConfirmModal" class="customer-modal" hidden>
+    <div class="customer-modal-card" role="dialog" aria-modal="true" aria-labelledby="changeConfirmTitle">
+      <h2 id="changeConfirmTitle" class="customer-modal-title">予約日時を変更しますか？</h2>
+      <p id="changeConfirmMessage" class="customer-modal-message"></p>
+      <button id="submitCustomerChangeButton" class="primary" type="button">この日時に変更する</button>
+      <button id="closeCustomerChangeModal" class="secondary" type="button">変更せず戻る</button>
+    </div>
+  </div>
+
   <script>
     const LIFF_ID = '2010784641-JegLxj1v';
     let currentIdToken = '';
@@ -276,6 +298,7 @@
     let currentBookingPolicy = null;
     let managedReservation = null;
     let currentReservationActionId = '';
+    let selectedChangeTime = '';
 
     const byId = id => document.getElementById(id);
     function setProgress(message) { byId('progress').textContent = message || ''; }
@@ -602,7 +625,9 @@
       byId('reservationManageLoading').hidden = false;
       byId('reservationManageEmpty').hidden = true;
       byId('reservationManage').hidden = true;
+      byId('reservationChangePanel').hidden = true;
       byId('reservationActionMessage').textContent = '';
+      selectedChangeTime = '';
       try {
         const result = await callApi('/api/next-reservation');
         managedReservation = result.reservation || null;
@@ -617,6 +642,7 @@
         byId('reservationManageMenu').textContent = managedReservation.menu || '';
         byId('reservationManage').hidden = false;
         byId('customerCancelButton').disabled = false;
+        byId('customerChangeButton').disabled = Boolean(currentBookingPolicy && currentBookingPolicy.restricted);
       } catch (error) {
         byId('reservationManageLoading').innerHTML =
           '<strong>予約を確認できませんでした</strong><span>' +
@@ -635,15 +661,20 @@
           setTimeout(checkReservationActionStatus, 5000);
           return;
         }
+        const isChange = action.actionType === 'change';
         byId('reservationActionMessage').textContent =
           action.message || (action.status === 'completed'
-            ? 'キャンセルが完了しました。' : 'キャンセルできませんでした。');
+            ? (isChange ? '予約日時を変更しました。' : 'キャンセルが完了しました。')
+            : (isChange ? '予約日時を変更できませんでした。' : 'キャンセルできませんでした。'));
         if (action.status === 'completed') {
+          byId('reservationChangePanel').hidden = true;
           await loadNextReservation();
           await loadBookingPolicy();
           setTimeout(loadReservationManagement, 800);
         } else {
           byId('customerCancelButton').disabled = false;
+          byId('customerChangeButton').disabled =
+            Boolean(currentBookingPolicy && currentBookingPolicy.restricted);
         }
       } catch (_) {
         setTimeout(checkReservationActionStatus, 5000);
@@ -676,6 +707,119 @@
       } catch (error) {
         byId('customerCancelButton').disabled = false;
         byId('reservationActionMessage').textContent = String(error.message || error);
+      }
+    }
+
+    function reservationDurationMinutes() {
+      if (!managedReservation) return 0;
+      const toMinutes = value => {
+        const parts = String(value || '').split(':');
+        return Number(parts[0]) * 60 + Number(parts[1]);
+      };
+      return toMinutes(managedReservation.endTime) - toMinutes(managedReservation.startTime);
+    }
+
+    function formatEndTime(startTime, duration) {
+      const parts = String(startTime || '').split(':');
+      const total = Number(parts[0]) * 60 + Number(parts[1]) + Number(duration || 0);
+      return String(Math.floor(total / 60)).padStart(2, '0') + ':' +
+        String(total % 60).padStart(2, '0');
+    }
+
+    async function loadChangeAvailability() {
+      if (!managedReservation) return;
+      const date = byId('changeDate').value;
+      selectedChangeTime = '';
+      byId('changeSlotGrid').hidden = true;
+      byId('selectedChangeSlot').hidden = true;
+      byId('confirmChangeSelectionButton').hidden = true;
+      if (!date) {
+        byId('changeSlotMessage').textContent = '予約日を選択してください。';
+        return;
+      }
+      byId('changeSlotMessage').textContent = '予約可能な時間を確認しています…';
+      try {
+        const result = await callApi('/api/reservation/change/availability', {
+          reservationId:managedReservation.reservationId,
+          date
+        });
+        const slots = Array.isArray(result.slots) ? result.slots : [];
+        const grid = byId('changeSlotGrid');
+        grid.innerHTML = '';
+        slots.forEach(time => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'slot-button';
+          button.textContent = time;
+          button.addEventListener('click', () => {
+            selectedChangeTime = time;
+            grid.querySelectorAll('.slot-button').forEach(item => {
+              item.classList.toggle('selected', item === button);
+            });
+            const endTime = formatEndTime(time, reservationDurationMinutes());
+            byId('selectedChangeSlot').textContent =
+              date.replace(/-/g, '/') + '　' + time + '〜' + endTime + ' を選択中';
+            byId('selectedChangeSlot').hidden = false;
+            byId('confirmChangeSelectionButton').hidden = false;
+          });
+          grid.appendChild(button);
+        });
+        byId('changeSlotMessage').textContent = slots.length
+          ? '変更後の開始時刻を選択してください。'
+          : 'この日に予約可能な時間はありません。';
+        grid.hidden = slots.length === 0;
+      } catch (error) {
+        byId('changeSlotMessage').textContent = String(error.message || error);
+      }
+    }
+
+    function openReservationChange() {
+      if (!managedReservation || (currentBookingPolicy && currentBookingPolicy.restricted)) return;
+      selectedChangeTime = '';
+      byId('changeDate').value = managedReservation.date;
+      byId('reservationChangePanel').hidden = false;
+      loadChangeAvailability();
+      byId('reservationChangePanel').scrollIntoView({ behavior:'smooth', block:'start' });
+    }
+
+    function confirmReservationChange() {
+      if (!managedReservation || !selectedChangeTime) return;
+      const date = byId('changeDate').value;
+      const endTime = formatEndTime(selectedChangeTime, reservationDurationMinutes());
+      const isSameDayChange = managedReservation.date === tokyoDate(0);
+      byId('changeConfirmMessage').textContent =
+        managedReservation.date.replace(/-/g, '/') + '　' +
+        managedReservation.startTime + '〜' + managedReservation.endTime +
+        ' から、' + date.replace(/-/g, '/') + '　' +
+        selectedChangeTime + '〜' + endTime + ' へ変更します。' +
+        (isSameDayChange
+          ? ' 本日の予約変更のため、当日変更として記録されます。'
+          : '');
+      byId('changeConfirmModal').hidden = false;
+    }
+
+    async function submitCustomerReservationChange() {
+      if (!managedReservation || !selectedChangeTime) return;
+      byId('changeConfirmModal').hidden = true;
+      byId('customerChangeButton').disabled = true;
+      byId('customerCancelButton').disabled = true;
+      byId('reservationActionMessage').textContent = '予約日時の変更を受け付けています…';
+      try {
+        const result = await callApi('/api/reservation/change/request', {
+          reservationId:managedReservation.reservationId,
+          date:byId('changeDate').value,
+          startTime:selectedChangeTime
+        });
+        currentReservationActionId = result.actionId;
+        byId('reservationActionMessage').textContent =
+          '日時変更を受け付けました。反映まで少しお待ちください。';
+        checkReservationActionStatus();
+      } catch (error) {
+        byId('customerCancelButton').disabled = false;
+        byId('customerChangeButton').disabled =
+          Boolean(currentBookingPolicy && currentBookingPolicy.restricted);
+        byId('reservationActionMessage').textContent = String(error.message || error);
+        loadChangeAvailability();
       }
     }
 
@@ -803,6 +947,18 @@
       byId('dateStep').scrollIntoView({ behavior:'smooth', block:'start' });
     });
     byId('customerCancelButton').addEventListener('click', requestCustomerCancellation);
+    byId('customerChangeButton').addEventListener('click', openReservationChange);
+    byId('changeDate').min = tokyoDate(0);
+    byId('changeDate').max = tokyoDate(90);
+    byId('changeDate').addEventListener('change', loadChangeAvailability);
+    byId('confirmChangeSelectionButton').addEventListener('click', confirmReservationChange);
+    byId('closeChangePanelButton').addEventListener('click', () => {
+      byId('reservationChangePanel').hidden = true;
+    });
+    byId('submitCustomerChangeButton').addEventListener('click', submitCustomerReservationChange);
+    byId('closeCustomerChangeModal').addEventListener('click', () => {
+      byId('changeConfirmModal').hidden = true;
+    });
     byId('confirmCustomerCancelButton').addEventListener('click', submitCustomerCancellation);
     byId('closeCustomerCancelModal').addEventListener('click', () => {
       byId('cancelConfirmModal').hidden = true;
