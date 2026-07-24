@@ -83,6 +83,15 @@
     .summary-label { color:var(--muted); font-size:13px; font-weight:800; }
     .summary-value { font-size:18px; font-weight:900; }
     .summary-note { padding:12px 15px; border-top:1px solid var(--line); color:var(--muted); font-size:12px; line-height:1.6; }
+    .date-step { margin-top:18px; padding:18px; border:1px solid var(--line); border-radius:18px; background:#fff; }
+    .date-step-title { margin:0 0 6px; font-size:19px; font-weight:900; }
+    .date-field-label { margin-top:14px; color:#344054; font-size:14px; font-weight:900; }
+    .date-input { width:100%; margin-top:12px; }
+    .slot-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:9px; margin-top:16px; }
+    .slot-button { min-height:48px; border:1.5px solid #bfdbfe; border-radius:12px; background:#eff6ff; color:#1d4ed8; font:inherit; font-size:15px; font-weight:900; }
+    .slot-button.selected { border-color:var(--blue); background:var(--blue); color:#fff; }
+    .slot-message { margin-top:14px; color:var(--muted); font-size:14px; font-weight:700; line-height:1.6; }
+    .selected-slot { margin-top:16px; padding:15px; border-radius:14px; background:#ecfdf3; color:var(--green); font-weight:900; text-align:center; }
     @media (max-width:380px) { .nav-button { font-size:11px; } }
   </style>
 </head>
@@ -147,7 +156,16 @@
           <div class="summary-row"><span class="summary-label">学生料金 合計</span><span id="selectedStudentTotal" class="summary-value">0円</span></div>
           <div class="summary-note">学生料金の適用は、店舗で登録されている学生区分をもとに予約確定時に判定します。</div>
         </div>
-        <button id="bookingNextButton" class="primary" type="button" disabled>日時選択は次の段階で追加します</button>
+        <button id="bookingNextButton" class="primary" type="button" disabled>日時を選択する</button>
+        <section id="dateStep" class="date-step" hidden>
+          <h3 class="date-step-title">予約日を選択</h3>
+          <p class="note">選択したメニューの予約枠時間に合わせて、予約可能な開始時刻を表示します。</p>
+          <label class="date-field-label" for="bookingDate">予約日（タップして変更）</label>
+          <input id="bookingDate" class="date-input" type="date">
+          <div id="slotMessage" class="slot-message">予約日を選択してください。</div>
+          <div id="slotGrid" class="slot-grid" hidden></div>
+          <div id="selectedSlot" class="selected-slot" hidden></div>
+        </section>
       </div>
 
       <div id="historyView" class="card" hidden>
@@ -191,6 +209,7 @@
     let selectedMenuIds = new Set();
     let menusLoaded = false;
     let menusLoading = false;
+    let selectedBookingTime = '';
 
     const byId = id => document.getElementById(id);
     function setProgress(message) { byId('progress').textContent = message || ''; }
@@ -254,7 +273,68 @@
       byId('selectedNormalTotal').textContent = formatYen(normalTotal);
       byId('selectedStudentTotal').textContent = formatYen(studentTotal);
       byId('menuSummary').hidden = selected.length === 0;
-      byId('bookingNextButton').disabled = true;
+      byId('bookingNextButton').disabled = selected.length === 0;
+      if (!selected.length) {
+        byId('dateStep').hidden = true;
+        selectedBookingTime = '';
+      } else if (!byId('dateStep').hidden && byId('bookingDate').value) {
+        loadAvailability();
+      }
+    }
+
+    function selectedTreatmentMinutes() {
+      return currentMenus
+        .filter(menu => selectedMenuIds.has(menu.menuId))
+        .reduce((sum, menu) => sum + Number(menu.treatmentTime || 0), 0);
+    }
+
+    function tokyoDate(offsetDays) {
+      const date = new Date(Date.now() + 9 * 60 * 60 * 1000);
+      date.setUTCDate(date.getUTCDate() + Number(offsetDays || 0));
+      return date.toISOString().slice(0, 10);
+    }
+
+    async function loadAvailability() {
+      const date = byId('bookingDate').value;
+      const minutes = selectedTreatmentMinutes();
+      selectedBookingTime = '';
+      byId('selectedSlot').hidden = true;
+      byId('slotGrid').hidden = true;
+      byId('slotGrid').replaceChildren();
+      if (!date || minutes <= 0) {
+        byId('slotMessage').textContent = '予約日を選択してください。';
+        return;
+      }
+      byId('slotMessage').textContent = '空き時間を確認しています…';
+      try {
+        const result = await callApi('/api/availability', {
+          date,
+          treatmentMinutes:minutes
+        });
+        const slots = Array.isArray(result.slots) ? result.slots : [];
+        if (!slots.length) {
+          byId('slotMessage').textContent = 'この日は選択できる時間がありません。別の日をお選びください。';
+          return;
+        }
+        slots.forEach(time => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'slot-button';
+          button.textContent = time;
+          button.addEventListener('click', () => {
+            selectedBookingTime = time;
+            document.querySelectorAll('.slot-button').forEach(item => item.classList.remove('selected'));
+            button.classList.add('selected');
+            byId('selectedSlot').textContent = date.replace(/-/g, '/') + '　' + time + '〜 を選択中';
+            byId('selectedSlot').hidden = false;
+          });
+          byId('slotGrid').appendChild(button);
+        });
+        byId('slotMessage').textContent = '予約可能な開始時刻を選択してください。';
+        byId('slotGrid').hidden = false;
+      } catch (error) {
+        byId('slotMessage').textContent = String(error.message || error);
+      }
     }
 
     function renderMenus() {
@@ -439,6 +519,17 @@
     document.querySelectorAll('.nav-button').forEach(button => {
       button.addEventListener('click', () => switchView(button.dataset.view));
     });
+    byId('bookingNextButton').addEventListener('click', () => {
+      byId('dateStep').hidden = false;
+      if (!byId('bookingDate').value) {
+        byId('bookingDate').value = tokyoDate(0);
+      }
+      loadAvailability();
+      byId('dateStep').scrollIntoView({ behavior:'smooth', block:'start' });
+    });
+    byId('bookingDate').min = tokyoDate(0);
+    byId('bookingDate').max = tokyoDate(90);
+    byId('bookingDate').addEventListener('change', loadAvailability);
     startLiff();
   </script>
 </body>

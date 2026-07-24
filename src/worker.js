@@ -420,9 +420,13 @@ async function api(request, env, pathname) {
         end: toMinutes(row.end_time)
       }));
       const slots = [];
+      const tokyoNow = new Date(Date.now() + 9 * 60 * 60 * 1000);
+      const today = tokyoNow.toISOString().slice(0, 10);
+      const currentMinutes = tokyoNow.getUTCHours() * 60 + tokyoNow.getUTCMinutes();
       for (let start = 10 * 60; start + treatmentMinutes <= 23 * 60; start += 30) {
         const end = start + treatmentMinutes;
-        if (!busy.some(item => start < item.end && end > item.start)) {
+        const isPast = date === today && start <= currentMinutes;
+        if (!isPast && !busy.some(item => start < item.end && end > item.start)) {
           slots.push(`${String(Math.floor(start / 60)).padStart(2, '0')}:${String(start % 60).padStart(2, '0')}`);
         }
       }
