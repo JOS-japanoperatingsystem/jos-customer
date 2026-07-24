@@ -279,6 +279,38 @@ async function adminApi(request, env, pathname) {
       return json({ ok: true, menuCount: statements.length - 1 });
     }
 
+    if (pathname === '/api/admin/availability/sync') {
+      const body = await readJson(request);
+      const busy = Array.isArray(body.busy) ? body.busy.slice(0, 5000) : [];
+      const now = new Date().toISOString();
+      const statements = [env.jos_customer_db.prepare('DELETE FROM availability_busy')];
+
+      busy.forEach((item, index) => {
+        const date = normalizeText(item.date, 10);
+        const startTime = normalizeText(item.startTime, 5);
+        const endTime = normalizeText(item.endTime, 5);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+            !/^\d{2}:\d{2}$/.test(startTime) ||
+            !/^\d{2}:\d{2}$/.test(endTime) ||
+            endTime <= startTime) return;
+        statements.push(env.jos_customer_db.prepare(
+          `INSERT INTO availability_busy
+             (busy_id, busy_date, start_time, end_time, busy_type, synced_at)
+           VALUES (?, ?, ?, ?, ?, ?)`
+        ).bind(
+          normalizeText(item.busyId, 100) || `${date}-${startTime}-${endTime}-${index}`,
+          date,
+          startTime,
+          endTime,
+          normalizeText(item.busyType, 30) || 'reservation',
+          now
+        ));
+      });
+
+      await env.jos_customer_db.batch(statements);
+      return json({ ok: true, busyCount: statements.length - 1 });
+    }
+
     if (pathname === '/api/admin/approve') {
       const body = await readJson(request);
       const approvalKey = normalizeText(body.approvalKey, 80);
@@ -361,6 +393,40 @@ async function api(request, env, pathname) {
           treatmentTime: Number(row.treatment_time || 0)
         }))
       });
+    }
+    if (pathname === '/api/availability') {
+      const profile = await env.jos_customer_db.prepare(
+        `SELECT jos_customer_id FROM customer_profiles
+          WHERE line_sub = ? AND link_status = 'approved'`
+      ).bind(identity.sub).first();
+      if (!profile || !profile.jos_customer_id) {
+        return json({ ok: false, message: '店舗連携完了後に利用できます。' }, 403);
+      }
+
+      const date = normalizeText(body.date, 10);
+      const treatmentMinutes = Math.max(1, Math.min(780, Math.round(Number(body.treatmentMinutes || 0))));
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('予約日が正しくありません。');
+
+      const result = await env.jos_customer_db.prepare(
+        `SELECT start_time, end_time FROM availability_busy
+          WHERE busy_date = ? ORDER BY start_time ASC`
+      ).bind(date).all();
+      const toMinutes = value => {
+        const parts = String(value || '').split(':');
+        return Number(parts[0]) * 60 + Number(parts[1]);
+      };
+      const busy = (result.results || []).map(row => ({
+        start: toMinutes(row.start_time),
+        end: toMinutes(row.end_time)
+      }));
+      const slots = [];
+      for (let start = 10 * 60; start + treatmentMinutes <= 23 * 60; start += 30) {
+        const end = start + treatmentMinutes;
+        if (!busy.some(item => start < item.end && end > item.start)) {
+          slots.push(`${String(Math.floor(start / 60)).padStart(2, '0')}:${String(start % 60).padStart(2, '0')}`);
+        }
+      }
+      return json({ ok: true, date, treatmentMinutes, slots });
     }
 
     return json({ ok: false, message: 'APIが見つかりません。' }, 404);
