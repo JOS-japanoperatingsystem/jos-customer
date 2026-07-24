@@ -311,6 +311,52 @@ async function adminApi(request, env, pathname) {
       return json({ ok: true, busyCount: statements.length - 1 });
     }
 
+    if (pathname === '/api/admin/bookings/pending') {
+      const result = await env.jos_customer_db.prepare(
+        `SELECT request_id, jos_customer_id, customer_name, menu_ids,
+                reservation_date, start_time, end_time, treatment_time, created_at
+           FROM customer_booking_requests
+          WHERE status = 'pending'
+          ORDER BY created_at ASC LIMIT 100`
+      ).all();
+      return json({
+        ok: true,
+        requests: (result.results || []).map(row => ({
+          requestId: row.request_id,
+          customerId: row.jos_customer_id,
+          customerName: row.customer_name,
+          menuIds: String(row.menu_ids || '').split(',').filter(Boolean),
+          date: row.reservation_date,
+          startTime: row.start_time,
+          endTime: row.end_time,
+          treatmentTime: Number(row.treatment_time || 0),
+          createdAt: row.created_at
+        }))
+      });
+    }
+
+    if (pathname === '/api/admin/bookings/complete') {
+      const body = await readJson(request);
+      const requestId = normalizeText(body.requestId, 100);
+      const accepted = body.accepted === true;
+      if (!requestId) throw new Error('予約リクエストIDがありません。');
+      const now = new Date().toISOString();
+      const result = await env.jos_customer_db.prepare(
+        `UPDATE customer_booking_requests
+            SET status = ?, reservation_id = ?, final_price = ?,
+                result_message = ?, updated_at = ?
+          WHERE request_id = ? AND status = 'pending'`
+      ).bind(
+        accepted ? 'confirmed' : 'rejected',
+        normalizeText(body.reservationId, 100),
+        accepted ? Math.max(0, Math.round(Number(body.finalPrice || 0))) : null,
+        normalizeText(body.message, 500),
+        now,
+        requestId
+      ).run();
+      return json({ ok: true, updated: Number(result.meta && result.meta.changes || 0) });
+    }
+
     if (pathname === '/api/admin/approve') {
       const body = await readJson(request);
       const approvalKey = normalizeText(body.approvalKey, 80);
@@ -409,8 +455,12 @@ async function api(request, env, pathname) {
 
       const result = await env.jos_customer_db.prepare(
         `SELECT start_time, end_time FROM availability_busy
-          WHERE busy_date = ? ORDER BY start_time ASC`
-      ).bind(date).all();
+          WHERE busy_date = ?
+          UNION ALL
+         SELECT start_time, end_time FROM customer_booking_requests
+          WHERE reservation_date = ? AND status = 'pending'
+          ORDER BY start_time ASC`
+      ).bind(date, date).all();
       const toMinutes = value => {
         const parts = String(value || '').split(':');
         return Number(parts[0]) * 60 + Number(parts[1]);
@@ -431,6 +481,117 @@ async function api(request, env, pathname) {
         }
       }
       return json({ ok: true, date, treatmentMinutes, slots });
+    }
+
+    if (pathname === '/api/booking/request') {
+      const profile = await env.jos_customer_db.prepare(
+        `SELECT jos_customer_id, last_name, first_name
+           FROM customer_profiles
+          WHERE line_sub = ? AND link_status = 'approved'`
+      ).bind(identity.sub).first();
+      if (!profile || !profile.jos_customer_id) {
+        return json({ ok: false, message: '店舗連携完了後に利用できます。' }, 403);
+      }
+
+      const menuIds = Array.isArray(body.menuIds)
+        ? [...new Set(body.menuIds.map(value => normalizeText(value, 80)).filter(Boolean))].slice(0, 30)
+        : [];
+      const date = normalizeText(body.date, 10);
+      const startTime = normalizeText(body.startTime, 5);
+      if (!menuIds.length) throw new Error('メニューを選択してください。');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('予約日が正しくありません。');
+      if (!/^\d{2}:\d{2}$/.test(startTime)) throw new Error('開始時間が正しくありません。');
+
+      const placeholders = menuIds.map(() => '?').join(',');
+      const menuResult = await env.jos_customer_db.prepare(
+        `SELECT menu_id, menu_name, normal_price, student_price, treatment_time
+           FROM menu_catalog
+          WHERE is_active = 1 AND menu_id IN (${placeholders})`
+      ).bind(...menuIds).all();
+      const menus = menuResult.results || [];
+      if (menus.length !== menuIds.length) throw new Error('選択されたメニューを確認できませんでした。');
+
+      const treatmentTime = menus.reduce((sum, menu) => sum + Number(menu.treatment_time || 0), 0);
+      const normalTotal = menus.reduce((sum, menu) => sum + Number(menu.normal_price || 0), 0);
+      const studentTotal = menus.reduce((sum, menu) => sum + Number(menu.student_price || menu.normal_price || 0), 0);
+      const toMinutes = value => {
+        const parts = String(value || '').split(':');
+        return Number(parts[0]) * 60 + Number(parts[1]);
+      };
+      const start = toMinutes(startTime);
+      const end = start + treatmentTime;
+      if (treatmentTime <= 0 || start < 10 * 60 || end > 23 * 60 || start % 30 !== 0) {
+        throw new Error('選択された予約時間を確認できませんでした。');
+      }
+      const endTime = `${String(Math.floor(end / 60)).padStart(2, '0')}:${String(end % 60).padStart(2, '0')}`;
+      const requestId = crypto.randomUUID().replace(/-/g, '');
+      const now = new Date().toISOString();
+      const customerName = `${normalizeText(profile.last_name, 40)} ${normalizeText(profile.first_name, 40)}`.trim();
+      const insert = await env.jos_customer_db.prepare(
+        `INSERT INTO customer_booking_requests
+           (request_id, line_sub, jos_customer_id, customer_name, menu_ids,
+            menu_names, reservation_date, start_time, end_time, treatment_time,
+            normal_total, student_total, status, created_at, updated_at)
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?
+          WHERE NOT EXISTS (
+            SELECT 1 FROM availability_busy
+             WHERE busy_date = ? AND ? < end_time AND ? > start_time
+          )
+            AND NOT EXISTS (
+            SELECT 1 FROM customer_booking_requests
+             WHERE reservation_date = ? AND status IN ('pending', 'confirmed')
+               AND ? < end_time AND ? > start_time
+          )`
+      ).bind(
+        requestId,
+        identity.sub,
+        profile.jos_customer_id,
+        customerName,
+        menuIds.join(','),
+        menus.map(menu => menu.menu_name).join('、'),
+        date,
+        startTime,
+        endTime,
+        treatmentTime,
+        normalTotal,
+        studentTotal,
+        now,
+        now,
+        date,
+        startTime,
+        endTime,
+        date,
+        startTime,
+        endTime
+      ).run();
+      if (!insert.meta || Number(insert.meta.changes || 0) !== 1) {
+        return json({ ok: false, message: '選択中に予約が入りました。別の時間を選択してください。' }, 409);
+      }
+      return json({ ok: true, requestId, status: 'pending' });
+    }
+
+    if (pathname === '/api/booking/status') {
+      const requestId = normalizeText(body.requestId, 100);
+      const row = await env.jos_customer_db.prepare(
+        `SELECT status, reservation_id, final_price, result_message,
+                reservation_date, start_time, end_time, menu_names
+           FROM customer_booking_requests
+          WHERE request_id = ? AND line_sub = ?`
+      ).bind(requestId, identity.sub).first();
+      if (!row) throw new Error('予約状況を確認できませんでした。');
+      return json({
+        ok: true,
+        booking: {
+          status: row.status,
+          reservationId: row.reservation_id,
+          finalPrice: row.final_price === null ? null : Number(row.final_price),
+          message: row.result_message,
+          date: row.reservation_date,
+          startTime: row.start_time,
+          endTime: row.end_time,
+          menuNames: row.menu_names
+        }
+      });
     }
 
     return json({ ok: false, message: 'APIが見つかりません。' }, 404);

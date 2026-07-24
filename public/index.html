@@ -92,6 +92,12 @@
     .slot-button.selected { border-color:var(--blue); background:var(--blue); color:#fff; }
     .slot-message { margin-top:14px; color:var(--muted); font-size:14px; font-weight:700; line-height:1.6; }
     .selected-slot { margin-top:16px; padding:15px; border-radius:14px; background:#ecfdf3; color:var(--green); font-weight:900; text-align:center; }
+    .booking-confirm { margin-top:18px; padding:18px; border:2px solid var(--blue); border-radius:18px; background:#fff; }
+    .confirm-title { margin:0 0 12px; font-size:20px; font-weight:900; }
+    .confirm-line { display:flex; justify-content:space-between; gap:14px; padding:11px 0; border-bottom:1px solid var(--line); }
+    .confirm-line span:first-child { color:var(--muted); font-weight:800; }
+    .confirm-line strong { text-align:right; }
+    .booking-result { margin-top:18px; padding:20px; border-radius:18px; background:#eff6ff; color:#1d4ed8; text-align:center; font-weight:900; line-height:1.7; }
     @media (max-width:380px) { .nav-button { font-size:11px; } }
   </style>
 </head>
@@ -165,7 +171,19 @@
           <div id="slotMessage" class="slot-message">予約日を選択してください。</div>
           <div id="slotGrid" class="slot-grid" hidden></div>
           <div id="selectedSlot" class="selected-slot" hidden></div>
+          <button id="bookingConfirmButton" class="primary" type="button" hidden>予約内容を確認する</button>
         </section>
+        <section id="bookingConfirm" class="booking-confirm" hidden>
+          <h3 class="confirm-title">予約内容の確認</h3>
+          <div class="confirm-line"><span>お名前</span><strong id="confirmName"></strong></div>
+          <div class="confirm-line"><span>メニュー</span><strong id="confirmMenus"></strong></div>
+          <div class="confirm-line"><span>日時</span><strong id="confirmDateTime"></strong></div>
+          <div class="confirm-line"><span>予約枠時間</span><strong id="confirmTime"></strong></div>
+          <p class="summary-note">料金は店舗登録の学生区分・来店履歴・各種割引をもとにJOSで正式計算します。</p>
+          <button id="submitBookingButton" class="primary" type="button">この内容で予約する</button>
+          <button id="backToDateButton" class="secondary" type="button">日時を選び直す</button>
+        </section>
+        <div id="bookingResult" class="booking-result" hidden></div>
       </div>
 
       <div id="historyView" class="card" hidden>
@@ -210,6 +228,7 @@
     let menusLoaded = false;
     let menusLoading = false;
     let selectedBookingTime = '';
+    let currentBookingRequestId = '';
 
     const byId = id => document.getElementById(id);
     function setProgress(message) { byId('progress').textContent = message || ''; }
@@ -299,6 +318,8 @@
       const minutes = selectedTreatmentMinutes();
       selectedBookingTime = '';
       byId('selectedSlot').hidden = true;
+      byId('bookingConfirmButton').hidden = true;
+      byId('bookingConfirm').hidden = true;
       byId('slotGrid').hidden = true;
       byId('slotGrid').replaceChildren();
       if (!date || minutes <= 0) {
@@ -327,6 +348,7 @@
             button.classList.add('selected');
             byId('selectedSlot').textContent = date.replace(/-/g, '/') + '　' + time + '〜 を選択中';
             byId('selectedSlot').hidden = false;
+            byId('bookingConfirmButton').hidden = false;
           });
           byId('slotGrid').appendChild(button);
         });
@@ -334,6 +356,67 @@
         byId('slotGrid').hidden = false;
       } catch (error) {
         byId('slotMessage').textContent = String(error.message || error);
+      }
+    }
+
+    function showBookingConfirmation() {
+      const selected = currentMenus.filter(menu => selectedMenuIds.has(menu.menuId));
+      const date = byId('bookingDate').value;
+      if (!selected.length || !date || !selectedBookingTime) return;
+      byId('confirmName').textContent = currentProfile.lastName + ' ' + currentProfile.firstName + ' 様';
+      byId('confirmMenus').textContent = selected.map(menu => menu.menuName).join('、');
+      byId('confirmDateTime').textContent = date.replace(/-/g, '/') + '　' + selectedBookingTime + '〜';
+      byId('confirmTime').textContent = selectedTreatmentMinutes() + '分';
+      byId('dateStep').hidden = true;
+      byId('bookingConfirm').hidden = false;
+      byId('bookingConfirm').scrollIntoView({ behavior:'smooth', block:'start' });
+    }
+
+    async function checkBookingStatus() {
+      if (!currentBookingRequestId) return;
+      try {
+        const result = await callApi('/api/booking/status', { requestId:currentBookingRequestId });
+        const booking = result.booking || {};
+        if (booking.status === 'pending') {
+          setTimeout(checkBookingStatus, 5000);
+          return;
+        }
+        if (booking.status === 'confirmed') {
+          byId('bookingResult').innerHTML =
+            '予約が確定しました<br>' +
+            booking.date.replace(/-/g, '/') + '　' + booking.startTime + '〜' + booking.endTime +
+            '<br>' + booking.menuNames +
+            '<br>予定料金 ' + formatYen(booking.finalPrice);
+          loadNextReservation();
+        } else {
+          byId('bookingResult').textContent = booking.message || '予約を確定できませんでした。別の日時をお選びください。';
+        }
+      } catch (_) {
+        setTimeout(checkBookingStatus, 5000);
+      }
+    }
+
+    async function submitBooking() {
+      const button = byId('submitBookingButton');
+      button.disabled = true;
+      button.textContent = '予約枠を確保しています…';
+      try {
+        const result = await callApi('/api/booking/request', {
+          menuIds:Array.from(selectedMenuIds),
+          date:byId('bookingDate').value,
+          startTime:selectedBookingTime
+        });
+        currentBookingRequestId = result.requestId;
+        byId('bookingConfirm').hidden = true;
+        byId('bookingResult').hidden = false;
+        byId('bookingResult').innerHTML =
+          '予約を受け付けました。<br>' +
+          '確定後はホームの「次回予約」に反映されます。';
+        checkBookingStatus();
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = 'この内容で予約する';
+        showError(String(error.message || error));
       }
     }
 
@@ -530,6 +613,13 @@
     byId('bookingDate').min = tokyoDate(0);
     byId('bookingDate').max = tokyoDate(90);
     byId('bookingDate').addEventListener('change', loadAvailability);
+    byId('bookingConfirmButton').addEventListener('click', showBookingConfirmation);
+    byId('submitBookingButton').addEventListener('click', submitBooking);
+    byId('backToDateButton').addEventListener('click', () => {
+      byId('bookingConfirm').hidden = true;
+      byId('dateStep').hidden = false;
+      byId('dateStep').scrollIntoView({ behavior:'smooth', block:'start' });
+    });
     startLiff();
   </script>
 </body>
