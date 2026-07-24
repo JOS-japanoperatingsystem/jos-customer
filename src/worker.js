@@ -175,6 +175,104 @@ async function adminApi(request, env, pathname) {
   if (!adminAuthorized(request, env)) return json({ ok: false, message: '管理認証に失敗しました。' }, 401);
 
   try {
+    if (pathname === '/api/admin/policies/controls') {
+      const result = await env.jos_customer_db.prepare(
+        `SELECT jos_customer_id, manual_restricted, manual_restriction_note,
+                policy_reset_at
+           FROM customer_booking_policy
+          ORDER BY jos_customer_id ASC
+          LIMIT 1000`
+      ).all();
+      return json({
+        ok: true,
+        controls: (result.results || []).map(row => ({
+          customerId: row.jos_customer_id,
+          manualRestricted: Number(row.manual_restricted || 0) === 1,
+          manualRestrictionNote: row.manual_restriction_note || '',
+          policyResetAt: row.policy_reset_at || ''
+        }))
+      });
+    }
+
+    if (pathname === '/api/admin/policy/get') {
+      const body = await readJson(request);
+      const customerId = normalizeText(body.customerId, 80);
+      if (!customerId) throw new Error('顧客IDがありません。');
+      const linked = await env.jos_customer_db.prepare(
+        `SELECT 1 AS linked FROM customer_profiles
+          WHERE jos_customer_id = ? AND link_status = 'approved'`
+      ).bind(customerId).first();
+      if (!linked) {
+        return json({ ok: true, linked: false, policy: null });
+      }
+      const row = await env.jos_customer_db.prepare(
+        `SELECT normal_cancel_count, same_day_count, no_show_count,
+                automatic_restricted, manual_restricted,
+                manual_restriction_note, policy_reset_at, synced_at
+           FROM customer_booking_policy
+          WHERE jos_customer_id = ?`
+      ).bind(customerId).first();
+      const policy = row || {};
+      return json({
+        ok: true,
+        linked: true,
+        policy: {
+          normalCancelCount: Number(policy.normal_cancel_count || 0),
+          sameDayCount: Number(policy.same_day_count || 0),
+          noShowCount: Number(policy.no_show_count || 0),
+          automaticRestricted: Number(policy.automatic_restricted || 0) === 1,
+          manualRestricted: Number(policy.manual_restricted || 0) === 1,
+          manualRestrictionNote: policy.manual_restriction_note || '',
+          policyResetAt: policy.policy_reset_at || '',
+          syncedAt: policy.synced_at || ''
+        }
+      });
+    }
+
+    if (pathname === '/api/admin/policy/manual-update') {
+      const body = await readJson(request);
+      const customerId = normalizeText(body.customerId, 80);
+      const restricted = body.restricted === true;
+      const note = normalizeText(body.note, 300);
+      if (!customerId) throw new Error('顧客IDがありません。');
+      const linked = await env.jos_customer_db.prepare(
+        `SELECT 1 AS linked FROM customer_profiles
+          WHERE jos_customer_id = ? AND link_status = 'approved'`
+      ).bind(customerId).first();
+      if (!linked) throw new Error('お客様ページと連携されていません。');
+      const now = new Date().toISOString();
+
+      if (restricted) {
+        await env.jos_customer_db.prepare(
+          `INSERT INTO customer_booking_policy
+             (jos_customer_id, manual_restricted, manual_restriction_note, synced_at)
+           VALUES (?, 1, ?, ?)
+           ON CONFLICT(jos_customer_id) DO UPDATE SET
+             manual_restricted = 1,
+             manual_restriction_note = excluded.manual_restriction_note,
+             synced_at = excluded.synced_at`
+        ).bind(customerId, note, now).run();
+      } else {
+        await env.jos_customer_db.prepare(
+          `INSERT INTO customer_booking_policy
+             (jos_customer_id, normal_cancel_count, same_day_count, no_show_count,
+              automatic_restricted, manual_restricted, manual_restriction_note,
+              policy_reset_at, synced_at)
+           VALUES (?, 0, 0, 0, 0, 0, '', ?, ?)
+           ON CONFLICT(jos_customer_id) DO UPDATE SET
+             normal_cancel_count = 0,
+             same_day_count = 0,
+             no_show_count = 0,
+             automatic_restricted = 0,
+             manual_restricted = 0,
+             manual_restriction_note = '',
+             policy_reset_at = excluded.policy_reset_at,
+             synced_at = excluded.synced_at`
+        ).bind(customerId, now, now).run();
+      }
+      return json({ ok: true, restricted, resetAt: restricted ? '' : now });
+    }
+
     if (pathname === '/api/admin/pending') {
       const result = await env.jos_customer_db.prepare(
         `SELECT approval_key, line_display_name, last_name, first_name,
