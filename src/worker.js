@@ -409,6 +409,40 @@ async function adminApi(request, env, pathname) {
       return json({ ok: true });
     }
 
+    if (pathname === '/api/admin/reservation-actions/pending') {
+      const result = await env.jos_customer_db.prepare(
+        `SELECT action_id, reservation_id, cancel_status
+           FROM customer_reservation_actions
+          WHERE status = 'pending'
+          ORDER BY created_at ASC LIMIT 100`
+      ).all();
+      return json({
+        ok: true,
+        actions: (result.results || []).map(row => ({
+          actionId: row.action_id,
+          reservationId: row.reservation_id,
+          cancelStatus: row.cancel_status
+        }))
+      });
+    }
+
+    if (pathname === '/api/admin/reservation-actions/complete') {
+      const body = await readJson(request);
+      const actionId = normalizeText(body.actionId, 100);
+      if (!actionId) throw new Error('操作IDがありません。');
+      await env.jos_customer_db.prepare(
+        `UPDATE customer_reservation_actions
+            SET status = ?, result_message = ?, updated_at = ?
+          WHERE action_id = ? AND status = 'pending'`
+      ).bind(
+        body.accepted === true ? 'completed' : 'rejected',
+        normalizeText(body.message, 300),
+        new Date().toISOString(),
+        actionId
+      ).run();
+      return json({ ok: true });
+    }
+
     return json({ ok: false, message: '管理APIが見つかりません。' }, 404);
   } catch (error) {
     return json({ ok: false, message: String(error && error.message ? error.message : '処理に失敗しました。') }, 400);
@@ -667,6 +701,61 @@ async function api(request, env, pathname) {
           startTime: row.start_time,
           endTime: row.end_time,
           menuNames: row.menu_names
+        }
+      });
+    }
+
+    if (pathname === '/api/reservation/cancel/request') {
+      const profile = await env.jos_customer_db.prepare(
+        `SELECT jos_customer_id FROM customer_profiles
+          WHERE line_sub = ? AND link_status = 'approved'`
+      ).bind(identity.sub).first();
+      if (!profile || !profile.jos_customer_id) {
+        return json({ ok: false, message: '店舗連携完了後に利用できます。' }, 403);
+      }
+      const reservationId = normalizeText(body.reservationId, 80);
+      const reservation = await env.jos_customer_db.prepare(
+        `SELECT reservation_date FROM customer_next_reservations
+          WHERE jos_customer_id = ? AND reservation_id = ?`
+      ).bind(profile.jos_customer_id, reservationId).first();
+      if (!reservation) throw new Error('対象の予約を確認できませんでした。');
+
+      const tokyoToday = new Date(Date.now() + 9 * 60 * 60 * 1000)
+        .toISOString().slice(0, 10);
+      const cancelStatus = reservation.reservation_date === tokyoToday
+        ? '当日キャンセル' : 'キャンセル';
+      const actionId = crypto.randomUUID().replace(/-/g, '');
+      const now = new Date().toISOString();
+      try {
+        await env.jos_customer_db.prepare(
+          `INSERT INTO customer_reservation_actions
+             (action_id, line_sub, jos_customer_id, reservation_id,
+              action_type, cancel_status, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'cancel', ?, 'pending', ?, ?)`
+        ).bind(
+          actionId, identity.sub, profile.jos_customer_id,
+          reservationId, cancelStatus, now, now
+        ).run();
+      } catch (_) {
+        return json({ ok: false, message: 'この予約のキャンセル処理を受付済みです。' }, 409);
+      }
+      return json({ ok: true, actionId, cancelStatus, status: 'pending' });
+    }
+
+    if (pathname === '/api/reservation/action/status') {
+      const actionId = normalizeText(body.actionId, 100);
+      const row = await env.jos_customer_db.prepare(
+        `SELECT status, result_message, cancel_status
+           FROM customer_reservation_actions
+          WHERE action_id = ? AND line_sub = ?`
+      ).bind(actionId, identity.sub).first();
+      if (!row) throw new Error('キャンセル状況を確認できませんでした。');
+      return json({
+        ok: true,
+        action: {
+          status: row.status,
+          message: row.result_message,
+          cancelStatus: row.cancel_status
         }
       });
     }

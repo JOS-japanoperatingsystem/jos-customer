@@ -106,6 +106,15 @@
     .policy-message { margin-top:9px; line-height:1.65; font-size:14px; font-weight:800; }
     .policy-consent { display:flex; align-items:flex-start; gap:10px; margin-top:16px; padding:14px; border:1px solid var(--line); border-radius:14px; background:#f9fafb; font-size:13px; line-height:1.65; cursor:pointer; }
     .policy-consent input { flex:0 0 24px; width:24px; height:24px; margin:0; }
+    .reservation-manage { padding:18px; border:1px solid var(--line); border-radius:16px; background:#fff; }
+    .reservation-manage-date { font-size:20px; font-weight:900; }
+    .reservation-manage-menu { margin-top:8px; color:#344054; font-weight:800; }
+    .danger-button { width:100%; min-height:54px; margin-top:18px; border:2px solid #f04438; border-radius:14px; background:#fff; color:#b42318; font:inherit; font-size:16px; font-weight:900; }
+    .action-message { margin-top:14px; color:var(--muted); font-weight:800; line-height:1.65; }
+    .customer-modal { position:fixed; z-index:100; inset:0; display:grid; place-items:center; padding:24px; background:rgba(17,24,39,.55); }
+    .customer-modal-card { width:min(100%,480px); padding:24px 20px; border-radius:22px; background:#fff; box-shadow:0 24px 60px rgba(0,0,0,.25); }
+    .customer-modal-title { margin:0; font-size:22px; font-weight:900; }
+    .customer-modal-message { margin:13px 0 0; color:#475467; line-height:1.75; font-weight:700; }
     @media (max-width:380px) { .nav-button { font-size:11px; } }
   </style>
 </head>
@@ -201,7 +210,14 @@
 
       <div id="historyView" class="card" hidden>
         <h2 class="view-title">予約確認</h2>
-        <div class="empty-panel"><strong>予約確認を準備中です</strong><span>今後の予約確認・日時変更・キャンセルはこちらにまとめます。</span></div>
+        <div id="reservationManageLoading" class="empty-panel"><strong>予約を確認しています</strong></div>
+        <div id="reservationManageEmpty" class="empty-panel" hidden><strong>現在の予約はありません</strong><span>新しい予約は「予約する」から登録できます。</span></div>
+        <div id="reservationManage" class="reservation-manage" hidden>
+          <div id="reservationManageDate" class="reservation-manage-date"></div>
+          <div id="reservationManageMenu" class="reservation-manage-menu"></div>
+          <button id="customerCancelButton" class="danger-button" type="button">この予約をキャンセル</button>
+          <div id="reservationActionMessage" class="action-message"></div>
+        </div>
       </div>
 
       <div id="mypageView" class="card" hidden>
@@ -238,6 +254,15 @@
     <button class="nav-button" data-view="mypage" type="button"><span class="nav-icon">☰</span>マイページ</button>
   </nav>
 
+  <div id="cancelConfirmModal" class="customer-modal" hidden>
+    <div class="customer-modal-card" role="dialog" aria-modal="true" aria-labelledby="cancelConfirmTitle">
+      <h2 id="cancelConfirmTitle" class="customer-modal-title">予約をキャンセルしますか？</h2>
+      <p id="cancelConfirmMessage" class="customer-modal-message"></p>
+      <button id="confirmCustomerCancelButton" class="danger-button" type="button">予約をキャンセルする</button>
+      <button id="closeCustomerCancelModal" class="secondary" type="button">キャンセルせず戻る</button>
+    </div>
+  </div>
+
   <script>
     const LIFF_ID = '2010784641-JegLxj1v';
     let currentIdToken = '';
@@ -249,6 +274,8 @@
     let selectedBookingTime = '';
     let currentBookingRequestId = '';
     let currentBookingPolicy = null;
+    let managedReservation = null;
+    let currentReservationActionId = '';
 
     const byId = id => document.getElementById(id);
     function setProgress(message) { byId('progress').textContent = message || ''; }
@@ -540,6 +567,7 @@
         if (currentProfile && currentProfile.linkStatus === 'approved') loadMenus();
         else showMenuError('店舗連携完了後にメニューを選択できます。');
       }
+      if (viewName === 'history') loadReservationManagement();
       window.scrollTo({ top:0, behavior:'smooth' });
     }
 
@@ -567,6 +595,87 @@
         byId('nextReservation').hidden = false;
       } catch (_) {
         byId('nextReservation').hidden = true;
+      }
+    }
+
+    async function loadReservationManagement() {
+      byId('reservationManageLoading').hidden = false;
+      byId('reservationManageEmpty').hidden = true;
+      byId('reservationManage').hidden = true;
+      byId('reservationActionMessage').textContent = '';
+      try {
+        const result = await callApi('/api/next-reservation');
+        managedReservation = result.reservation || null;
+        byId('reservationManageLoading').hidden = true;
+        if (!managedReservation) {
+          byId('reservationManageEmpty').hidden = false;
+          return;
+        }
+        byId('reservationManageDate').textContent =
+          managedReservation.date.replace(/-/g, '/') + '　' +
+          managedReservation.startTime + '〜' + (managedReservation.endTime || '');
+        byId('reservationManageMenu').textContent = managedReservation.menu || '';
+        byId('reservationManage').hidden = false;
+        byId('customerCancelButton').disabled = false;
+      } catch (error) {
+        byId('reservationManageLoading').innerHTML =
+          '<strong>予約を確認できませんでした</strong><span>' +
+          String(error.message || error) + '</span>';
+      }
+    }
+
+    async function checkReservationActionStatus() {
+      if (!currentReservationActionId) return;
+      try {
+        const result = await callApi('/api/reservation/action/status', {
+          actionId:currentReservationActionId
+        });
+        const action = result.action || {};
+        if (action.status === 'pending') {
+          setTimeout(checkReservationActionStatus, 5000);
+          return;
+        }
+        byId('reservationActionMessage').textContent =
+          action.message || (action.status === 'completed'
+            ? 'キャンセルが完了しました。' : 'キャンセルできませんでした。');
+        if (action.status === 'completed') {
+          await loadNextReservation();
+          await loadBookingPolicy();
+          setTimeout(loadReservationManagement, 800);
+        } else {
+          byId('customerCancelButton').disabled = false;
+        }
+      } catch (_) {
+        setTimeout(checkReservationActionStatus, 5000);
+      }
+    }
+
+    function requestCustomerCancellation() {
+      if (!managedReservation) return;
+      const isToday = managedReservation.date === tokyoDate(0);
+      byId('cancelConfirmMessage').textContent = isToday
+        ? '本日の予約のため、当日キャンセルとして記録されます。内容をご確認のうえ操作してください。'
+        : managedReservation.date.replace(/-/g, '/') + '　' +
+          managedReservation.startTime + '〜の予約をキャンセルします。';
+      byId('cancelConfirmModal').hidden = false;
+    }
+
+    async function submitCustomerCancellation() {
+      if (!managedReservation) return;
+      byId('cancelConfirmModal').hidden = true;
+      byId('customerCancelButton').disabled = true;
+      byId('reservationActionMessage').textContent = 'キャンセルを受け付けています…';
+      try {
+        const result = await callApi('/api/reservation/cancel/request', {
+          reservationId:managedReservation.reservationId
+        });
+        currentReservationActionId = result.actionId;
+        byId('reservationActionMessage').textContent =
+          'キャンセルを受け付けました。反映まで少しお待ちください。';
+        checkReservationActionStatus();
+      } catch (error) {
+        byId('customerCancelButton').disabled = false;
+        byId('reservationActionMessage').textContent = String(error.message || error);
       }
     }
 
@@ -692,6 +801,11 @@
       byId('bookingConfirm').hidden = true;
       byId('dateStep').hidden = false;
       byId('dateStep').scrollIntoView({ behavior:'smooth', block:'start' });
+    });
+    byId('customerCancelButton').addEventListener('click', requestCustomerCancellation);
+    byId('confirmCustomerCancelButton').addEventListener('click', submitCustomerCancellation);
+    byId('closeCustomerCancelModal').addEventListener('click', () => {
+      byId('cancelConfirmModal').hidden = true;
     });
     startLiff();
   </script>
