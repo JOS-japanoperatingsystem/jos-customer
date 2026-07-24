@@ -247,6 +247,38 @@ async function adminApi(request, env, pathname) {
       return json({ ok: true, reservationCount: statements.length - 1 });
     }
 
+    if (pathname === '/api/admin/policies/sync') {
+      const body = await readJson(request);
+      const policies = Array.isArray(body.policies) ? body.policies.slice(0, 1000) : [];
+      const now = new Date().toISOString();
+      const statements = [];
+      policies.forEach(item => {
+        const customerId = normalizeText(item.customerId, 80);
+        if (!customerId) return;
+        statements.push(env.jos_customer_db.prepare(
+          `INSERT INTO customer_booking_policy
+             (jos_customer_id, normal_cancel_count, same_day_count,
+              no_show_count, automatic_restricted, synced_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(jos_customer_id) DO UPDATE SET
+             normal_cancel_count = excluded.normal_cancel_count,
+             same_day_count = excluded.same_day_count,
+             no_show_count = excluded.no_show_count,
+             automatic_restricted = excluded.automatic_restricted,
+             synced_at = excluded.synced_at`
+        ).bind(
+          customerId,
+          Math.max(0, Number(item.normalCancelCount || 0)),
+          Math.max(0, Number(item.sameDayCount || 0)),
+          Math.max(0, Number(item.noShowCount || 0)),
+          item.automaticRestricted === true ? 1 : 0,
+          now
+        ));
+      });
+      if (statements.length) await env.jos_customer_db.batch(statements);
+      return json({ ok: true, policyCount: statements.length });
+    }
+
     if (pathname === '/api/admin/menus/sync') {
       const body = await readJson(request);
       const menus = Array.isArray(body.menus) ? body.menus.slice(0, 1000) : [];
@@ -412,6 +444,35 @@ async function api(request, env, pathname) {
       ).bind(profile.jos_customer_id).first();
       return json({ ok: true, reservation: publicReservation(row) });
     }
+    if (pathname === '/api/booking-policy') {
+      const profile = await env.jos_customer_db.prepare(
+        `SELECT jos_customer_id FROM customer_profiles
+          WHERE line_sub = ? AND link_status = 'approved'`
+      ).bind(identity.sub).first();
+      if (!profile || !profile.jos_customer_id) {
+        return json({ ok: false, message: '店舗連携完了後に利用できます。' }, 403);
+      }
+      const row = await env.jos_customer_db.prepare(
+        `SELECT normal_cancel_count, same_day_count, no_show_count,
+                automatic_restricted, manual_restricted
+           FROM customer_booking_policy WHERE jos_customer_id = ?`
+      ).bind(profile.jos_customer_id).first();
+      const policy = row || {};
+      const sameDayCount = Number(policy.same_day_count || 0);
+      const noShowCount = Number(policy.no_show_count || 0);
+      const restricted = Number(policy.automatic_restricted || 0) === 1 ||
+        Number(policy.manual_restricted || 0) === 1;
+      return json({
+        ok: true,
+        policy: {
+          normalCancelCount: Number(policy.normal_cancel_count || 0),
+          sameDayCount,
+          noShowCount,
+          restricted,
+          warning: !restricted && (sameDayCount === 2 || noShowCount === 1)
+        }
+      });
+    }
     if (pathname === '/api/menus') {
       const profile = await env.jos_customer_db.prepare(
         `SELECT jos_customer_id FROM customer_profiles
@@ -491,6 +552,22 @@ async function api(request, env, pathname) {
       ).bind(identity.sub).first();
       if (!profile || !profile.jos_customer_id) {
         return json({ ok: false, message: '店舗連携完了後に利用できます。' }, 403);
+      }
+      if (body.policyAccepted !== true) {
+        return json({ ok: false, message: '予約規定への同意が必要です。' }, 400);
+      }
+      const policy = await env.jos_customer_db.prepare(
+        `SELECT automatic_restricted, manual_restricted
+           FROM customer_booking_policy WHERE jos_customer_id = ?`
+      ).bind(profile.jos_customer_id).first();
+      if (policy && (
+        Number(policy.automatic_restricted || 0) === 1 ||
+        Number(policy.manual_restricted || 0) === 1
+      )) {
+        return json({
+          ok: false,
+          message: '現在オンライン予約をご利用いただけません。店舗へお問い合わせください。'
+        }, 403);
       }
 
       const menuIds = Array.isArray(body.menuIds)

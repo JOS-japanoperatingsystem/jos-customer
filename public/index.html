@@ -98,6 +98,14 @@
     .confirm-line span:first-child { color:var(--muted); font-weight:800; }
     .confirm-line strong { text-align:right; }
     .booking-result { margin-top:18px; padding:20px; border-radius:18px; background:#eff6ff; color:#1d4ed8; text-align:center; font-weight:900; line-height:1.7; }
+    .policy-panel { margin-top:18px; padding:16px; border:1px solid #bfdbfe; border-radius:16px; background:#eff6ff; }
+    .policy-panel.warning { border-color:#fdb022; background:#fffaeb; color:#93370d; }
+    .policy-panel.restricted { border-color:#f97066; background:#fff1f0; color:#b42318; }
+    .policy-title { font-weight:900; }
+    .policy-counts { margin-top:9px; line-height:1.8; font-size:14px; font-weight:800; }
+    .policy-message { margin-top:9px; line-height:1.65; font-size:14px; font-weight:800; }
+    .policy-consent { display:flex; align-items:flex-start; gap:10px; margin-top:16px; padding:14px; border:1px solid var(--line); border-radius:14px; background:#f9fafb; font-size:13px; line-height:1.65; cursor:pointer; }
+    .policy-consent input { flex:0 0 24px; width:24px; height:24px; margin:0; }
     @media (max-width:380px) { .nav-button { font-size:11px; } }
   </style>
 </head>
@@ -180,15 +188,20 @@
           <div class="confirm-line"><span>日時</span><strong id="confirmDateTime"></strong></div>
           <div class="confirm-line"><span>予約枠時間</span><strong id="confirmTime"></strong></div>
           <p class="summary-note">料金は店舗登録の学生区分・来店履歴・各種割引をもとにJOSで正式計算します。</p>
-          <button id="submitBookingButton" class="primary" type="button">この内容で予約する</button>
+          <div class="policy-panel">
+            <div class="policy-title">予約変更・キャンセル規定</div>
+            <div class="policy-message">直近3か月の当日変更・当日キャンセルが3回、または無断キャンセルが2回になると、オンライン予約が制限されます。</div>
+          </div>
+          <label class="policy-consent"><input id="policyConsent" type="checkbox"><span>予約変更・キャンセル規定を確認し、同意します。</span></label>
+          <button id="submitBookingButton" class="primary" type="button" disabled>規定への同意が必要です</button>
           <button id="backToDateButton" class="secondary" type="button">日時を選び直す</button>
         </section>
         <div id="bookingResult" class="booking-result" hidden></div>
       </div>
 
       <div id="historyView" class="card" hidden>
-        <h2 class="view-title">予約履歴</h2>
-        <div class="empty-panel"><strong>予約履歴を準備中です</strong><span>今後の予約確認・日時変更・キャンセルはこちらにまとめます。</span></div>
+        <h2 class="view-title">予約確認</h2>
+        <div class="empty-panel"><strong>予約確認を準備中です</strong><span>今後の予約確認・日時変更・キャンセルはこちらにまとめます。</span></div>
       </div>
 
       <div id="mypageView" class="card" hidden>
@@ -198,6 +211,12 @@
           <div class="connection-row"><span>LINE連携</span><span class="connection-state">本人確認済み</span></div>
           <div class="connection-row"><span>店舗連携</span><span id="mypageLinkState" class="connection-state"></span></div>
           <div id="identity" class="connection-row" hidden><span>LINE表示名</span><span id="identityName" class="connection-state"></span></div>
+        </div>
+        <div class="mypage-section">
+          <div class="mypage-section-title">直近3か月のご利用状況</div>
+          <div id="bookingPolicyPanel" class="policy-panel">
+            <div class="policy-title">確認中です</div>
+          </div>
         </div>
         <div class="mypage-section">
           <div class="mypage-section-title">お客様情報</div>
@@ -215,7 +234,7 @@
   <nav id="bottomNav" class="bottom-nav" aria-label="お客様メニュー" hidden>
     <button class="nav-button active" data-view="home" type="button"><span class="nav-icon">⌂</span>ホーム</button>
     <button class="nav-button" data-view="booking" type="button"><span class="nav-icon">＋</span>予約する</button>
-    <button class="nav-button" data-view="history" type="button"><span class="nav-icon">▦</span>予約履歴</button>
+    <button class="nav-button" data-view="history" type="button"><span class="nav-icon">▦</span>予約確認</button>
     <button class="nav-button" data-view="mypage" type="button"><span class="nav-icon">☰</span>マイページ</button>
   </nav>
 
@@ -229,6 +248,7 @@
     let menusLoading = false;
     let selectedBookingTime = '';
     let currentBookingRequestId = '';
+    let currentBookingPolicy = null;
 
     const byId = id => document.getElementById(id);
     function setProgress(message) { byId('progress').textContent = message || ''; }
@@ -369,6 +389,9 @@
       byId('confirmTime').textContent = selectedTreatmentMinutes() + '分';
       byId('dateStep').hidden = true;
       byId('bookingConfirm').hidden = false;
+      byId('policyConsent').checked = false;
+      byId('submitBookingButton').disabled = true;
+      byId('submitBookingButton').textContent = '規定への同意が必要です';
       byId('bookingConfirm').scrollIntoView({ behavior:'smooth', block:'start' });
     }
 
@@ -400,11 +423,18 @@
       const button = byId('submitBookingButton');
       button.disabled = true;
       button.textContent = '予約枠を確保しています…';
+      if (!byId('policyConsent').checked) {
+        button.disabled = false;
+        button.textContent = 'この内容で予約する';
+        showError('予約変更・キャンセル規定をご確認のうえ、同意してください。');
+        return;
+      }
       try {
         const result = await callApi('/api/booking/request', {
           menuIds:Array.from(selectedMenuIds),
           date:byId('bookingDate').value,
-          startTime:selectedBookingTime
+          startTime:selectedBookingTime,
+          policyAccepted:true
         });
         currentBookingRequestId = result.requestId;
         byId('bookingConfirm').hidden = true;
@@ -540,6 +570,38 @@
       }
     }
 
+    function renderBookingPolicy(policy) {
+      currentBookingPolicy = policy || {};
+      const panel = byId('bookingPolicyPanel');
+      panel.className = 'policy-panel' +
+        (currentBookingPolicy.restricted ? ' restricted' : (currentBookingPolicy.warning ? ' warning' : ''));
+      let message = '現在オンライン予約をご利用いただけます。';
+      if (currentBookingPolicy.restricted) {
+        message = '現在オンライン予約をご利用いただけません。店舗へお問い合わせください。';
+      } else if (Number(currentBookingPolicy.sameDayCount || 0) === 2) {
+        message = '次回の当日変更・キャンセルでオンライン予約が制限されます。';
+      } else if (Number(currentBookingPolicy.noShowCount || 0) === 1) {
+        message = '次回の無断キャンセルでオンライン予約が制限されます。';
+      }
+      panel.innerHTML =
+        '<div class="policy-title">' + (currentBookingPolicy.restricted ? 'オンライン予約制限中' : 'ご利用状況') + '</div>' +
+        '<div class="policy-counts">通常キャンセル：' + Number(currentBookingPolicy.normalCancelCount || 0) + '回<br>' +
+        '当日変更・当日キャンセル：' + Number(currentBookingPolicy.sameDayCount || 0) + '回<br>' +
+        '無断キャンセル：' + Number(currentBookingPolicy.noShowCount || 0) + '回</div>' +
+        '<div class="policy-message">' + message + '</div>';
+      document.querySelector('[data-view="booking"]').disabled = Boolean(currentBookingPolicy.restricted);
+    }
+
+    async function loadBookingPolicy() {
+      try {
+        const result = await callApi('/api/booking-policy');
+        renderBookingPolicy(result.policy || {});
+      } catch (_) {
+        byId('bookingPolicyPanel').innerHTML =
+          '<div class="policy-title">ご利用状況を確認できませんでした</div>';
+      }
+    }
+
     function showRegistered(profile) {
       currentProfile = profile;
       document.body.classList.add('app-ready');
@@ -557,7 +619,12 @@
       byId('registered').hidden = false;
       byId('bottomNav').hidden = false;
       switchView('home');
-      if (approved) loadNextReservation(); else byId('nextReservation').hidden = true;
+      if (approved) {
+        loadNextReservation();
+        loadBookingPolicy();
+      } else {
+        byId('nextReservation').hidden = true;
+      }
     }
 
     async function loadProfile() {
@@ -615,6 +682,12 @@
     byId('bookingDate').addEventListener('change', loadAvailability);
     byId('bookingConfirmButton').addEventListener('click', showBookingConfirmation);
     byId('submitBookingButton').addEventListener('click', submitBooking);
+    byId('policyConsent').addEventListener('change', () => {
+      const accepted = byId('policyConsent').checked;
+      byId('submitBookingButton').disabled = !accepted;
+      byId('submitBookingButton').textContent =
+        accepted ? 'この内容で予約する' : '規定への同意が必要です';
+    });
     byId('backToDateButton').addEventListener('click', () => {
       byId('bookingConfirm').hidden = true;
       byId('dateStep').hidden = false;
