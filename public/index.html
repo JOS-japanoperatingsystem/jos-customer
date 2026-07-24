@@ -62,6 +62,27 @@
     .nav-button { min-width:0; min-height:60px; border:0; border-radius:15px; background:transparent; color:#667085; font:inherit; font-size:12px; font-weight:900; cursor:pointer; }
     .nav-icon { display:block; margin-bottom:3px; font-size:23px; line-height:1; }
     .nav-button.active { background:#eff6ff; color:var(--blue); }
+    .primary:disabled { background:#cbd5e1; cursor:not-allowed; }
+    .menu-loading,.menu-empty { padding:24px 16px; border:1px solid var(--line); border-radius:16px; color:var(--muted); text-align:center; }
+    .menu-error { padding:14px 16px; border:1px solid #fda29b; border-radius:14px; background:#fff1f0; color:#b42318; font-weight:800; }
+    .menu-groups { display:grid; gap:16px; }
+    .menu-group-title { margin:0 0 8px; font-size:17px; font-weight:900; }
+    .menu-list { display:grid; gap:9px; }
+    .menu-item { width:100%; display:flex; align-items:center; gap:12px; padding:14px; border:1.5px solid var(--line); border-radius:15px; background:#fff; color:var(--ink); cursor:pointer; text-align:left; }
+    .menu-item.selected { border-color:var(--blue); background:#eff6ff; box-shadow:0 0 0 1px var(--blue); }
+    .menu-check { flex:0 0 26px; width:26px; height:26px; display:grid; place-items:center; border:1.5px solid #98a2b3; border-radius:8px; color:#fff; font-weight:900; }
+    .menu-item.selected .menu-check { border-color:var(--blue); background:var(--blue); }
+    .menu-main { min-width:0; flex:1; }
+    .menu-name { font-size:16px; font-weight:900; }
+    .menu-meta { margin-top:3px; color:var(--muted); font-size:13px; font-weight:700; }
+    .menu-price { flex:0 0 auto; color:var(--blue); font-size:13px; font-weight:900; text-align:right; }
+    .menu-summary { margin-top:18px; border:2px solid var(--blue); border-radius:18px; overflow:hidden; }
+    .summary-row { display:flex; justify-content:space-between; align-items:center; gap:16px; padding:13px 15px; }
+    .summary-row + .summary-row { border-top:1px solid var(--line); }
+    .summary-row.total { background:#eff6ff; }
+    .summary-label { color:var(--muted); font-size:13px; font-weight:800; }
+    .summary-value { font-size:18px; font-weight:900; }
+    .summary-note { padding:12px 15px; border-top:1px solid var(--line); color:var(--muted); font-size:12px; line-height:1.6; }
     @media (max-width:380px) { .nav-button { font-size:11px; } }
   </style>
 </head>
@@ -114,7 +135,19 @@
 
       <div id="bookingView" class="card" hidden>
         <h2 class="view-title">予約する</h2>
-        <div class="empty-panel"><strong>予約機能を準備中です</strong><span>メニューと空き時間を選んで、その場で予約できる画面を作成しています。</span></div>
+        <p class="note">ご希望のメニューを選択してください。複数選択できます。</p>
+        <div id="menuLoading" class="menu-loading">メニューを読み込んでいます…</div>
+        <div id="menuError" class="menu-error" hidden></div>
+        <div id="menuCatalog" class="menu-groups" hidden></div>
+        <div id="menuEmpty" class="menu-empty" hidden>現在選択できるメニューがありません。</div>
+        <div id="menuSummary" class="menu-summary" hidden>
+          <div class="summary-row"><span class="summary-label">選択メニュー数</span><span id="selectedMenuCount" class="summary-value">0件</span></div>
+          <div class="summary-row"><span class="summary-label">合計予約枠時間</span><span id="selectedMenuTime" class="summary-value">0分</span></div>
+          <div class="summary-row total"><span class="summary-label">通常料金 合計</span><span id="selectedNormalTotal" class="summary-value">0円</span></div>
+          <div class="summary-row"><span class="summary-label">学生料金 合計</span><span id="selectedStudentTotal" class="summary-value">0円</span></div>
+          <div class="summary-note">学生料金の適用は、店舗で登録されている学生区分をもとに予約確定時に判定します。</div>
+        </div>
+        <button id="bookingNextButton" class="primary" type="button" disabled>日時選択は次の段階で追加します</button>
       </div>
 
       <div id="historyView" class="card" hidden>
@@ -154,6 +187,10 @@
     const LIFF_ID = '2010784641-JegLxj1v';
     let currentIdToken = '';
     let currentProfile = null;
+    let currentMenus = [];
+    let selectedMenuIds = new Set();
+    let menusLoaded = false;
+    let menusLoading = false;
 
     const byId = id => document.getElementById(id);
     function setProgress(message) { byId('progress').textContent = message || ''; }
@@ -194,6 +231,111 @@
       mypage:'mypageView'
     };
 
+    function formatYen(value) {
+      return Number(value || 0).toLocaleString('ja-JP') + '円';
+    }
+
+    function showMenuError(message) {
+      byId('menuLoading').hidden = true;
+      byId('menuCatalog').hidden = true;
+      byId('menuEmpty').hidden = true;
+      byId('menuSummary').hidden = true;
+      byId('menuError').textContent = message;
+      byId('menuError').hidden = false;
+    }
+
+    function renderMenuSummary() {
+      const selected = currentMenus.filter(menu => selectedMenuIds.has(menu.menuId));
+      const totalTime = selected.reduce((sum, menu) => sum + Number(menu.treatmentTime || 0), 0);
+      const normalTotal = selected.reduce((sum, menu) => sum + Number(menu.normalPrice || 0), 0);
+      const studentTotal = selected.reduce((sum, menu) => sum + Number(menu.studentPrice || menu.normalPrice || 0), 0);
+      byId('selectedMenuCount').textContent = selected.length + '件';
+      byId('selectedMenuTime').textContent = totalTime + '分';
+      byId('selectedNormalTotal').textContent = formatYen(normalTotal);
+      byId('selectedStudentTotal').textContent = formatYen(studentTotal);
+      byId('menuSummary').hidden = selected.length === 0;
+      byId('bookingNextButton').disabled = true;
+    }
+
+    function renderMenus() {
+      const catalog = byId('menuCatalog');
+      catalog.replaceChildren();
+      byId('menuLoading').hidden = true;
+      byId('menuError').hidden = true;
+      byId('menuEmpty').hidden = currentMenus.length !== 0;
+      catalog.hidden = currentMenus.length === 0;
+
+      const groups = new Map();
+      currentMenus.forEach(menu => {
+        const category = String(menu.category || '').trim() || 'その他';
+        if (!groups.has(category)) groups.set(category, []);
+        groups.get(category).push(menu);
+      });
+
+      groups.forEach((menus, category) => {
+        const section = document.createElement('section');
+        section.className = 'menu-group';
+        const heading = document.createElement('h3');
+        heading.className = 'menu-group-title';
+        heading.textContent = category;
+        section.appendChild(heading);
+
+        menus.forEach(menu => {
+          const selected = selectedMenuIds.has(menu.menuId);
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'menu-item' + (selected ? ' selected' : '');
+          button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+
+          const check = document.createElement('span');
+          check.className = 'menu-check';
+          check.textContent = selected ? '✓' : '';
+          const body = document.createElement('span');
+          body.className = 'menu-main';
+          const name = document.createElement('strong');
+          name.className = 'menu-name';
+          name.textContent = menu.menuName;
+          const meta = document.createElement('span');
+          meta.className = 'menu-meta';
+          meta.textContent = '予約枠時間：' + Number(menu.treatmentTime || 0) + '分';
+          body.append(name, meta);
+          const price = document.createElement('span');
+          price.className = 'menu-price';
+          const normal = Number(menu.normalPrice || 0);
+          const student = Number(menu.studentPrice || normal);
+          price.textContent = student !== normal
+            ? '通常 ' + formatYen(normal) + ' / 学生 ' + formatYen(student)
+            : formatYen(normal);
+          button.append(check, body, price);
+          button.addEventListener('click', () => {
+            if (selectedMenuIds.has(menu.menuId)) selectedMenuIds.delete(menu.menuId);
+            else selectedMenuIds.add(menu.menuId);
+            renderMenus();
+          });
+          section.appendChild(button);
+        });
+        catalog.appendChild(section);
+      });
+      renderMenuSummary();
+    }
+
+    async function loadMenus() {
+      if (menusLoading || menusLoaded) return;
+      menusLoading = true;
+      byId('menuLoading').hidden = false;
+      byId('menuError').hidden = true;
+      try {
+        const result = await callApi('/api/menus');
+        currentMenus = Array.isArray(result.menus) ? result.menus : [];
+        menusLoaded = true;
+        renderMenus();
+      } catch (error) {
+        showMenuError(String(error.message || error));
+      } finally {
+        menusLoading = false;
+      }
+    }
+
     function switchView(viewName) {
       Object.entries(viewIds).forEach(([name, id]) => {
         byId(id).hidden = name !== viewName;
@@ -201,6 +343,10 @@
       document.querySelectorAll('.nav-button').forEach(button => {
         button.classList.toggle('active', button.dataset.view === viewName);
       });
+      if (viewName === 'booking') {
+        if (currentProfile && currentProfile.linkStatus === 'approved') loadMenus();
+        else showMenuError('店舗連携完了後にメニューを選択できます。');
+      }
       window.scrollTo({ top:0, behavior:'smooth' });
     }
 

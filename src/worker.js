@@ -247,6 +247,38 @@ async function adminApi(request, env, pathname) {
       return json({ ok: true, reservationCount: statements.length - 1 });
     }
 
+    if (pathname === '/api/admin/menus/sync') {
+      const body = await readJson(request);
+      const menus = Array.isArray(body.menus) ? body.menus.slice(0, 1000) : [];
+      const now = new Date().toISOString();
+      const statements = [env.jos_customer_db.prepare('DELETE FROM menu_catalog')];
+
+      menus.forEach((item, index) => {
+        const menuId = normalizeText(item.menuId, 80);
+        const menuName = normalizeText(item.menuName, 200);
+        if (!menuId || !menuName) return;
+        statements.push(env.jos_customer_db.prepare(
+          `INSERT INTO menu_catalog
+             (menu_id, menu_name, category, normal_price, student_price,
+              treatment_time, sort_order, is_active, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).bind(
+          menuId,
+          menuName,
+          normalizeText(item.category, 120),
+          Math.max(0, Math.round(Number(item.normalPrice || 0))),
+          Math.max(0, Math.round(Number(item.studentPrice || 0))),
+          Math.max(0, Math.round(Number(item.treatmentTime || 0))),
+          Math.round(Number(item.sortOrder || index + 1)),
+          item.isActive === false ? 0 : 1,
+          now
+        ));
+      });
+
+      await env.jos_customer_db.batch(statements);
+      return json({ ok: true, menuCount: statements.length - 1 });
+    }
+
     if (pathname === '/api/admin/approve') {
       const body = await readJson(request);
       const approvalKey = normalizeText(body.approvalKey, 80);
@@ -302,6 +334,35 @@ async function api(request, env, pathname) {
       ).bind(profile.jos_customer_id).first();
       return json({ ok: true, reservation: publicReservation(row) });
     }
+    if (pathname === '/api/menus') {
+      const profile = await env.jos_customer_db.prepare(
+        `SELECT jos_customer_id FROM customer_profiles
+          WHERE line_sub = ? AND link_status = 'approved'`
+      ).bind(identity.sub).first();
+
+      if (!profile || !profile.jos_customer_id) {
+        return json({ ok: false, message: '店舗連携完了後に利用できます。' }, 403);
+      }
+
+      const result = await env.jos_customer_db.prepare(
+        `SELECT menu_id, menu_name, category, normal_price, student_price, treatment_time
+           FROM menu_catalog WHERE is_active = 1
+          ORDER BY sort_order ASC, menu_name ASC`
+      ).all();
+
+      return json({
+        ok: true,
+        menus: (result.results || []).map((row) => ({
+          menuId: row.menu_id,
+          menuName: row.menu_name,
+          category: row.category,
+          normalPrice: Number(row.normal_price || 0),
+          studentPrice: Number(row.student_price || 0),
+          treatmentTime: Number(row.treatment_time || 0)
+        }))
+      });
+    }
+
     return json({ ok: false, message: 'APIが見つかりません。' }, 404);
   } catch (error) {
     return json({ ok: false, message: String(error && error.message ? error.message : '処理に失敗しました。') }, 400);
