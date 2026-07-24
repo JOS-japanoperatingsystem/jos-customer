@@ -710,13 +710,19 @@ async function api(request, env, pathname) {
       if (!profile || !profile.jos_customer_id) {
         return json({ ok: false, message: '店舗連携完了後に利用できます。' }, 403);
       }
-      const row = await env.jos_customer_db.prepare(
+      const result = await env.jos_customer_db.prepare(
         `SELECT reservation_id, reservation_date, start_time, end_time,
                 menu_name, price, reservation_status
            FROM customer_next_reservations
           WHERE jos_customer_id = ?`
-      ).bind(profile.jos_customer_id).first();
-      return json({ ok: true, reservation: publicReservation(row) });
+          + ` ORDER BY reservation_date ASC, start_time ASC`
+      ).bind(profile.jos_customer_id).all();
+      const reservations = (result.results || []).map(publicReservation);
+      return json({
+        ok: true,
+        reservation: reservations[0] || null,
+        reservations
+      });
     }
     if (pathname === '/api/booking-policy') {
       const profile = await env.jos_customer_db.prepare(
@@ -842,23 +848,6 @@ async function api(request, env, pathname) {
           message: '現在オンライン予約をご利用いただけません。店舗へお問い合わせください。'
         }, 403);
       }
-      const existingReservation = await env.jos_customer_db.prepare(
-        `SELECT reservation_id FROM customer_next_reservations
-          WHERE jos_customer_id = ?
-          LIMIT 1`
-      ).bind(profile.jos_customer_id).first();
-      const pendingBooking = await env.jos_customer_db.prepare(
-        `SELECT request_id FROM customer_booking_requests
-          WHERE jos_customer_id = ? AND status = 'pending'
-          LIMIT 1`
-      ).bind(profile.jos_customer_id).first();
-      if (existingReservation || pendingBooking) {
-        return json({
-          ok: false,
-          message: '現在の予約があります。「予約確認」から日時変更またはキャンセルを行ってください。'
-        }, 409);
-      }
-
       const menuIds = Array.isArray(body.menuIds)
         ? [...new Set(body.menuIds.map(value => normalizeText(value, 80)).filter(Boolean))].slice(0, 30)
         : [];

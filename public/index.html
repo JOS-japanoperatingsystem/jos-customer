@@ -68,14 +68,14 @@
     .menu-groups { display:grid; gap:16px; }
     .menu-group-title { margin:0 0 8px; font-size:17px; font-weight:900; }
     .menu-list { display:grid; gap:9px; }
-    .menu-item { width:100%; display:flex; align-items:center; gap:12px; padding:14px; border:1.5px solid var(--line); border-radius:15px; background:#fff; color:var(--ink); cursor:pointer; text-align:left; }
+    .menu-item { width:100%; display:grid; grid-template-columns:34px minmax(0,1fr); align-items:center; gap:12px; padding:14px; border:1.5px solid var(--line); border-radius:15px; background:#fff; color:var(--ink); cursor:pointer; text-align:left; }
     .menu-item.selected { border-color:var(--blue); background:#eff6ff; box-shadow:0 0 0 1px var(--blue); }
     .menu-check { flex:0 0 26px; width:26px; height:26px; display:grid; place-items:center; border:1.5px solid #98a2b3; border-radius:8px; color:#fff; font-weight:900; }
     .menu-item.selected .menu-check { border-color:var(--blue); background:var(--blue); }
     .menu-main { min-width:0; flex:1; }
-    .menu-name { font-size:16px; font-weight:900; }
-    .menu-meta { margin-top:3px; color:var(--muted); font-size:13px; font-weight:700; }
-    .menu-price { flex:0 0 auto; color:var(--blue); font-size:13px; font-weight:900; text-align:right; }
+    .menu-name { display:block; font-size:16px; font-weight:900; line-height:1.45; overflow-wrap:anywhere; }
+    .menu-meta { display:block; margin-top:5px; color:var(--muted); font-size:13px; font-weight:700; }
+    .menu-price { grid-column:2; display:block; margin-top:-4px; color:var(--blue); font-size:13px; font-weight:900; line-height:1.5; text-align:left; }
     .menu-summary { margin-top:18px; border:2px solid var(--blue); border-radius:18px; overflow:hidden; }
     .summary-row { display:flex; justify-content:space-between; align-items:center; gap:16px; padding:13px 15px; }
     .summary-row + .summary-row { border-top:1px solid var(--line); }
@@ -107,6 +107,11 @@
     .policy-consent { display:flex; align-items:flex-start; gap:10px; margin-top:16px; padding:14px; border:1px solid var(--line); border-radius:14px; background:#f9fafb; font-size:13px; line-height:1.65; cursor:pointer; }
     .policy-consent input { flex:0 0 24px; width:24px; height:24px; margin:0; }
     .reservation-manage { padding:18px; border:1px solid var(--line); border-radius:16px; background:#fff; }
+    .reservation-list { display:grid; gap:12px; }
+    .reservation-list-card { width:100%; padding:16px; border:1.5px solid #bfdbfe; border-radius:16px; background:#f8fbff; color:var(--ink); font:inherit; text-align:left; cursor:pointer; }
+    .reservation-list-card strong { display:block; font-size:18px; }
+    .reservation-list-card span { display:block; margin-top:7px; color:#344054; font-weight:800; }
+    .reservation-back { margin:0 0 14px; }
     .reservation-manage-date { font-size:20px; font-weight:900; }
     .reservation-manage-menu { margin-top:8px; color:#344054; font-weight:800; }
     .danger-button { width:100%; min-height:54px; margin-top:18px; border:2px solid #f04438; border-radius:14px; background:#fff; color:#b42318; font:inherit; font-size:16px; font-weight:900; }
@@ -214,7 +219,9 @@
         <h2 class="view-title">予約確認</h2>
         <div id="reservationManageLoading" class="empty-panel"><strong>予約を確認しています</strong></div>
         <div id="reservationManageEmpty" class="empty-panel" hidden><strong>現在の予約はありません</strong><span>新しい予約は「予約する」から登録できます。</span></div>
+        <div id="reservationList" class="reservation-list" hidden></div>
         <div id="reservationManage" class="reservation-manage" hidden>
+          <button id="reservationListBackButton" class="secondary reservation-back" type="button">予約一覧へ戻る</button>
           <div id="reservationManageDate" class="reservation-manage-date"></div>
           <div id="reservationManageMenu" class="reservation-manage-menu"></div>
           <button id="customerChangeButton" class="primary" type="button">予約日時を変更する</button>
@@ -301,6 +308,7 @@
     let selectedChangeTime = '';
     let currentProfileUpdateRequestId = '';
     let currentNextReservation = null;
+    let currentReservations = [];
 
     const byId = id => document.getElementById(id);
     function setProgress(message) { byId('progress').textContent = message || ''; }
@@ -593,11 +601,7 @@
         button.classList.toggle('active', button.dataset.view === viewName);
       });
       if (viewName === 'booking') {
-        if (currentNextReservation) {
-          showMenuError(
-            '現在の予約があります。「予約確認」から日時変更またはキャンセルを行ってください。'
-          );
-        } else if (currentProfile && currentProfile.linkStatus === 'approved') loadMenus();
+        if (currentProfile && currentProfile.linkStatus === 'approved') loadMenus();
         else showMenuError('店舗連携完了後にメニューを選択できます。');
       }
       if (viewName === 'history') loadReservationManagement();
@@ -620,7 +624,11 @@
       byId('nextReservation').hidden = true;
       try {
         const result = await callApi('/api/next-reservation');
-        const reservation = result.reservation;
+        const reservations = Array.isArray(result.reservations)
+          ? result.reservations
+          : (result.reservation ? [result.reservation] : []);
+        currentReservations = reservations;
+        const reservation = reservations[0] || null;
         currentNextReservation = reservation || null;
         byId('nextReservationDate').textContent = reservation
           ? reservation.date.replace(/-/g, '/') + '　' + reservation.startTime + (reservation.endTime ? '〜' + reservation.endTime : '')
@@ -628,6 +636,7 @@
         byId('nextReservationMenu').textContent = reservation ? (reservation.menu || '') : '';
         byId('nextReservation').hidden = false;
       } catch (_) {
+        currentReservations = [];
         currentNextReservation = null;
         byId('nextReservation').hidden = true;
       }
@@ -636,18 +645,55 @@
     async function loadReservationManagement() {
       byId('reservationManageLoading').hidden = false;
       byId('reservationManageEmpty').hidden = true;
+      byId('reservationList').hidden = true;
       byId('reservationManage').hidden = true;
       byId('reservationChangePanel').hidden = true;
       byId('reservationActionMessage').textContent = '';
       selectedChangeTime = '';
       try {
         const result = await callApi('/api/next-reservation');
-        managedReservation = result.reservation || null;
+        currentReservations = Array.isArray(result.reservations)
+          ? result.reservations
+          : (result.reservation ? [result.reservation] : []);
+        managedReservation = null;
         byId('reservationManageLoading').hidden = true;
-        if (!managedReservation) {
+        if (!currentReservations.length) {
           byId('reservationManageEmpty').hidden = false;
           return;
         }
+        renderReservationList();
+      } catch (error) {
+        byId('reservationManageLoading').innerHTML =
+          '<strong>予約を確認できませんでした</strong><span>' +
+          String(error.message || error) + '</span>';
+      }
+    }
+
+    function renderReservationList() {
+      const list = byId('reservationList');
+      list.innerHTML = '';
+      currentReservations.forEach((reservation, index) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'reservation-list-card';
+        button.innerHTML =
+          '<strong>' + reservation.date.replace(/-/g, '/') + '　' +
+          reservation.startTime + '〜' + (reservation.endTime || '') + '</strong>' +
+          '<span>' + (reservation.menu || '') + '</span>' +
+          '<span>この予約の確認・変更・キャンセル</span>';
+        button.addEventListener('click', () => openReservationManagement(index));
+        list.appendChild(button);
+      });
+      list.hidden = false;
+    }
+
+    function openReservationManagement(index) {
+      managedReservation = currentReservations[index] || null;
+      if (!managedReservation) return;
+      byId('reservationList').hidden = true;
+      byId('reservationChangePanel').hidden = true;
+      byId('reservationActionMessage').textContent = '';
+      selectedChangeTime = '';
         byId('reservationManageDate').textContent =
           managedReservation.date.replace(/-/g, '/') + '　' +
           managedReservation.startTime + '〜' + (managedReservation.endTime || '');
@@ -655,11 +701,6 @@
         byId('reservationManage').hidden = false;
         byId('customerCancelButton').disabled = false;
         byId('customerChangeButton').disabled = Boolean(currentBookingPolicy && currentBookingPolicy.restricted);
-      } catch (error) {
-        byId('reservationManageLoading').innerHTML =
-          '<strong>予約を確認できませんでした</strong><span>' +
-          String(error.message || error) + '</span>';
-      }
     }
 
     async function checkReservationActionStatus() {
@@ -998,6 +1039,12 @@
     });
     byId('customerCancelButton').addEventListener('click', requestCustomerCancellation);
     byId('customerChangeButton').addEventListener('click', openReservationChange);
+    byId('reservationListBackButton').addEventListener('click', () => {
+      managedReservation = null;
+      byId('reservationManage').hidden = true;
+      byId('reservationChangePanel').hidden = true;
+      renderReservationList();
+    });
     byId('changeDate').min = tokyoDate(0);
     byId('changeDate').max = tokyoDate(90);
     byId('changeDate').addEventListener('change', loadChangeAvailability);
