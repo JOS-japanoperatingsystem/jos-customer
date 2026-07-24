@@ -299,6 +299,7 @@
     let managedReservation = null;
     let currentReservationActionId = '';
     let selectedChangeTime = '';
+    let currentProfileUpdateRequestId = '';
 
     const byId = id => document.getElementById(id);
     function setProgress(message) { byId('progress').textContent = message || ''; }
@@ -887,6 +888,32 @@
       if (result.exists) showRegistered(result.profile); else showForm(null, false);
     }
 
+    async function checkProfileUpdateStatus() {
+      if (!currentProfileUpdateRequestId) return;
+      try {
+        const result = await callApi('/api/profile/update/status', {
+          requestId:currentProfileUpdateRequestId
+        });
+        const update = result.update || {};
+        if (update.status === 'pending') {
+          setTimeout(checkProfileUpdateStatus, 5000);
+          return;
+        }
+        currentProfileUpdateRequestId = '';
+        const button = byId('saveButton');
+        button.disabled = false;
+        button.textContent = '変更内容を保存';
+        if (update.status === 'completed') {
+          setProgress('登録情報を変更しました。');
+          await loadProfile();
+        } else {
+          showError(update.message || '登録情報を変更できませんでした。');
+        }
+      } catch (_) {
+        setTimeout(checkProfileUpdateStatus, 5000);
+      }
+    }
+
     async function startLiff() {
       try {
         await liff.init({ liffId:LIFF_ID, withLoginOnExternalBrowser:true });
@@ -911,11 +938,23 @@
     byId('registrationForm').addEventListener('submit', async event => {
       event.preventDefault(); clearError();
       const button = byId('saveButton'); button.disabled = true; setProgress('安全に登録しています…');
+      let pendingUpdate = false;
       try {
         const result = await callApi('/api/profile/save', { profile:formProfile() });
-        setProgress(''); showRegistered(result.profile);
+        if (result.pendingUpdate) {
+          pendingUpdate = true;
+          currentProfileUpdateRequestId = result.requestId;
+          button.textContent = '反映を待っています…';
+          setProgress('変更を受け付けました。反映まで少しお待ちください。');
+          checkProfileUpdateStatus();
+        } else {
+          setProgress('');
+          showRegistered(result.profile);
+        }
       } catch (error) { showError(String(error.message || error)); }
-      finally { button.disabled = false; }
+      finally {
+        if (!pendingUpdate) button.disabled = false;
+      }
     });
     byId('editButton').addEventListener('click', () => showForm(currentProfile, true));
     byId('cancelEditButton').addEventListener('click', () => showRegistered(currentProfile));

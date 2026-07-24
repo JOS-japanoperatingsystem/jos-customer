@@ -126,11 +126,42 @@ async function saveProfile(env, identity, input) {
   const profile = validateProfile(input);
   const now = new Date().toISOString();
   const existing = await env.jos_customer_db.prepare(
-    'SELECT link_status FROM customer_profiles WHERE line_sub = ?'
+    `SELECT link_status, jos_customer_id
+       FROM customer_profiles WHERE line_sub = ?`
   ).bind(identity.sub).first();
 
   if (existing && existing.link_status === 'approved') {
-    return json({ ok: false, message: '連携済みの情報変更は次の開発段階で対応します。' }, 409);
+    const requestId = crypto.randomUUID().replace(/-/g, '');
+    try {
+      await env.jos_customer_db.prepare(
+        `INSERT INTO customer_profile_update_requests
+           (request_id, line_sub, jos_customer_id, last_name, first_name,
+            last_kana, first_kana, phone, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+      ).bind(
+        requestId,
+        identity.sub,
+        existing.jos_customer_id,
+        profile.lastName,
+        profile.firstName,
+        profile.lastKana,
+        profile.firstKana,
+        profile.phone,
+        now,
+        now
+      ).run();
+    } catch (_) {
+      return json({
+        ok: false,
+        message: '登録情報の変更を受付済みです。反映まで少しお待ちください。'
+      }, 409);
+    }
+    return json({
+      ok: true,
+      pendingUpdate: true,
+      requestId,
+      profile: { ...profile, linkStatus: 'approved' }
+    });
   }
 
   const approvalKey = crypto.randomUUID().replace(/-/g, '');
@@ -175,6 +206,73 @@ async function adminApi(request, env, pathname) {
   if (!adminAuthorized(request, env)) return json({ ok: false, message: '管理認証に失敗しました。' }, 401);
 
   try {
+    if (pathname === '/api/admin/profile-updates/pending') {
+      const result = await env.jos_customer_db.prepare(
+        `SELECT request_id, jos_customer_id, last_name, first_name,
+                last_kana, first_kana, phone
+           FROM customer_profile_update_requests
+          WHERE status = 'pending'
+          ORDER BY created_at ASC
+          LIMIT 100`
+      ).all();
+      return json({
+        ok: true,
+        requests: (result.results || []).map(row => ({
+          requestId: row.request_id,
+          customerId: row.jos_customer_id,
+          lastName: row.last_name,
+          firstName: row.first_name,
+          lastKana: row.last_kana,
+          firstKana: row.first_kana,
+          phone: row.phone
+        }))
+      });
+    }
+
+    if (pathname === '/api/admin/profile-updates/complete') {
+      const body = await readJson(request);
+      const requestId = normalizeText(body.requestId, 100);
+      if (!requestId) throw new Error('変更申請IDがありません。');
+      const row = await env.jos_customer_db.prepare(
+        `SELECT line_sub, last_name, first_name, last_kana, first_kana, phone
+           FROM customer_profile_update_requests
+          WHERE request_id = ? AND status = 'pending'`
+      ).bind(requestId).first();
+      if (!row) return json({ ok: true });
+      const now = new Date().toISOString();
+      const accepted = body.accepted === true;
+      const statements = [
+        env.jos_customer_db.prepare(
+          `UPDATE customer_profile_update_requests
+              SET status = ?, result_message = ?, updated_at = ?
+            WHERE request_id = ? AND status = 'pending'`
+        ).bind(
+          accepted ? 'completed' : 'rejected',
+          normalizeText(body.message, 300),
+          now,
+          requestId
+        )
+      ];
+      if (accepted) {
+        statements.push(env.jos_customer_db.prepare(
+          `UPDATE customer_profiles
+              SET last_name = ?, first_name = ?, last_kana = ?,
+                  first_kana = ?, phone = ?, updated_at = ?
+            WHERE line_sub = ? AND link_status = 'approved'`
+        ).bind(
+          row.last_name,
+          row.first_name,
+          row.last_kana,
+          row.first_kana,
+          row.phone,
+          now,
+          row.line_sub
+        ));
+      }
+      await env.jos_customer_db.batch(statements);
+      return json({ ok: true });
+    }
+
     if (pathname === '/api/admin/policies/controls') {
       const result = await env.jos_customer_db.prepare(
         `SELECT jos_customer_id, manual_restricted, manual_restriction_note,
@@ -565,6 +663,22 @@ async function api(request, env, pathname) {
     }
     if (pathname === '/api/profile') return getProfile(env, identity);
     if (pathname === '/api/profile/save') return saveProfile(env, identity, body.profile || {});
+    if (pathname === '/api/profile/update/status') {
+      const requestId = normalizeText(body.requestId, 100);
+      const row = await env.jos_customer_db.prepare(
+        `SELECT status, result_message
+           FROM customer_profile_update_requests
+          WHERE request_id = ? AND line_sub = ?`
+      ).bind(requestId, identity.sub).first();
+      if (!row) throw new Error('変更状況を確認できませんでした。');
+      return json({
+        ok: true,
+        update: {
+          status: row.status,
+          message: row.result_message || ''
+        }
+      });
+    }
     if (pathname === '/api/next-reservation') {
       const profile = await env.jos_customer_db.prepare(
         `SELECT jos_customer_id FROM customer_profiles
