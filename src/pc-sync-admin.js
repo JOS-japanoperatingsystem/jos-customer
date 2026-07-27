@@ -867,3 +867,66 @@ export async function getPcSyncStatus(env, options = {}) {
     recentRuns: runs
   };
 }
+
+export async function expirePcSyncRuns(env, options = {}) {
+  if (!env || !env.jos_customer_db) {
+    throw new PcSyncContractError(
+      'database_unavailable',
+      '同期用データベースを利用できません。'
+    );
+  }
+
+  const now = options.now instanceof Date ? options.now : new Date();
+  const checkedAt = now.toISOString();
+  const db = env.jos_customer_db;
+  const candidatesResult = await db.prepare(
+    `SELECT sync_run_id
+       FROM pc_sync_runs
+      WHERE status = 'building'
+        AND expires_at <= ?
+      ORDER BY started_at
+      LIMIT 100`
+  ).bind(checkedAt).all();
+  const candidates = candidatesResult &&
+    Array.isArray(candidatesResult.results)
+    ? candidatesResult.results
+    : [];
+
+  if (candidates.length === 0) {
+    return {
+      ok: true,
+      checkedAt,
+      expiredCount: 0,
+      expiredSyncRunIds: [],
+      idempotent: true
+    };
+  }
+
+  const statements = candidates.map(row => db.prepare(
+    `UPDATE pc_sync_runs
+        SET status = 'failed',
+            finished_at = ?,
+            error_code = 'sync_expired',
+            error_message = '同期が完了前に期限切れになりました。'
+      WHERE sync_run_id = ?
+        AND status = 'building'
+        AND expires_at <= ?`
+  ).bind(checkedAt, row.sync_run_id, checkedAt));
+  const results = await db.batch(statements);
+  const expiredSyncRunIds = candidates
+    .filter((row, index) => Number(
+      results &&
+      results[index] &&
+      results[index].meta &&
+      results[index].meta.changes
+    ) === 1)
+    .map(row => row.sync_run_id);
+
+  return {
+    ok: true,
+    checkedAt,
+    expiredCount: expiredSyncRunIds.length,
+    expiredSyncRunIds,
+    idempotent: expiredSyncRunIds.length === 0
+  };
+}
