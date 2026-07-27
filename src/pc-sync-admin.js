@@ -930,3 +930,100 @@ export async function expirePcSyncRuns(env, options = {}) {
     idempotent: expiredSyncRunIds.length === 0
   };
 }
+
+export async function getPcSnapshotManifest(env, options = {}) {
+  if (!env || !env.jos_customer_db) {
+    throw new PcSyncContractError(
+      'database_unavailable',
+      '同期用データベースを利用できません。'
+    );
+  }
+  const now = options.now instanceof Date ? options.now : new Date();
+  const maxAgeMs = Number.isFinite(options.maxAgeMs)
+    ? options.maxAgeMs
+    : 24 * 60 * 60 * 1000;
+  const db = env.jos_customer_db;
+  const activeResult = await db.prepare(
+    `SELECT r.sync_run_id, r.schema_version, r.contract_name, r.status,
+            r.source_generated_at, r.received_customer_count,
+            r.received_metric_count, r.received_customer_hash,
+            r.received_metric_hash, g.generation_id, g.is_active,
+            g.is_reconciled
+       FROM pc_sync_generations g
+       JOIN pc_sync_runs r ON r.sync_run_id = g.sync_run_id
+      WHERE g.is_active = 1
+      LIMIT 2`
+  ).all();
+  const activeRows = activeResult && Array.isArray(activeResult.results)
+    ? activeResult.results
+    : [];
+  if (activeRows.length !== 1) {
+    throw new PcSyncContractError(
+      'replica_unavailable',
+      '利用可能なD1同期世代を一意に確認できません。'
+    );
+  }
+  const active = activeRows[0];
+  if (active.status !== 'active' ||
+      Number(active.is_active) !== 1 ||
+      Number(active.is_reconciled) !== 1 ||
+      Number(active.schema_version) !== 1 ||
+      active.contract_name !== 'jos-pc-admin-snapshot') {
+    throw new PcSyncContractError(
+      'replica_unavailable',
+      'D1同期世代の状態または契約が一致しません。'
+    );
+  }
+  const sourceTime = Date.parse(active.source_generated_at);
+  if (!Number.isFinite(sourceTime) ||
+      now.getTime() - sourceTime < 0 ||
+      now.getTime() - sourceTime > maxAgeMs) {
+    throw new PcSyncContractError(
+      'replica_stale',
+      'D1同期世代の有効期限を超えています。'
+    );
+  }
+
+  const manifestResult = await db.prepare(
+    `SELECT c.customer_id, c.row_hash AS customer_row_hash,
+            m.row_hash AS metric_row_hash
+       FROM pc_customers_snapshot c
+       JOIN pc_customer_metrics_snapshot m
+         ON m.generation_id = c.generation_id
+        AND m.customer_id = c.customer_id
+      WHERE c.generation_id = ?
+      ORDER BY c.customer_id`
+  ).bind(active.generation_id).all();
+  const rows = manifestResult && Array.isArray(manifestResult.results)
+    ? manifestResult.results
+    : [];
+  const expectedCustomers = Number(active.received_customer_count);
+  const expectedMetrics = Number(active.received_metric_count);
+  if (!Number.isInteger(expectedCustomers) ||
+      !Number.isInteger(expectedMetrics) ||
+      expectedCustomers !== expectedMetrics ||
+      rows.length !== expectedCustomers) {
+    throw new PcSyncContractError(
+      'replica_count_mismatch',
+      'D1同期世代の件数が一致しません。'
+    );
+  }
+
+  return {
+    ok: true,
+    schemaVersion: Number(active.schema_version),
+    contractName: active.contract_name,
+    generationId: active.generation_id,
+    syncRunId: active.sync_run_id,
+    sourceGeneratedAt: active.source_generated_at,
+    customerCount: expectedCustomers,
+    metricCount: expectedMetrics,
+    customerDatasetHash: active.received_customer_hash,
+    metricDatasetHash: active.received_metric_hash,
+    records: rows.map(row => ({
+      customerId: row.customer_id,
+      customerRowHash: row.customer_row_hash,
+      metricRowHash: row.metric_row_hash
+    }))
+  };
+}

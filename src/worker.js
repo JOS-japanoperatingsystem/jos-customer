@@ -1,6 +1,7 @@
 import {
   activatePcSync,
   expirePcSyncRuns,
+  getPcSnapshotManifest,
   getPcSyncStatus,
   receivePcCustomerPage,
   receivePcMetricPage,
@@ -276,6 +277,10 @@ async function adminApi(request, env, pathname) {
 
     if (pathname === '/api/admin/pc-sync/expire') {
       return json(await expirePcSyncRuns(env));
+    }
+
+    if (pathname === '/api/admin/pc/snapshot-manifest') {
+      return json(await getPcSnapshotManifest(env));
     }
 
     if (pathname === '/api/admin/profile-updates/pending') {
