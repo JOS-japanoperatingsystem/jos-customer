@@ -625,6 +625,16 @@ export async function activatePcSync(env, payload, options = {}) {
 
   const statements = [
     db.prepare(
+      `UPDATE pc_sync_runs
+          SET status = 'reconciled'
+        WHERE status = 'active'
+          AND sync_run_id IN (
+            SELECT sync_run_id
+              FROM pc_sync_generations
+             WHERE is_active = 1 AND generation_id <> ?
+          )`
+    ).bind(syncRunId),
+    db.prepare(
       `UPDATE pc_sync_generations
           SET is_active = 0, superseded_at = ?
         WHERE is_active = 1 AND generation_id <> ?`
@@ -646,15 +656,15 @@ export async function activatePcSync(env, payload, options = {}) {
   const results = await db.batch(statements);
   const generationChanges = Number(
     results &&
-    results[1] &&
-    results[1].meta &&
-    results[1].meta.changes
-  );
-  const runChanges = Number(
-    results &&
     results[2] &&
     results[2].meta &&
     results[2].meta.changes
+  );
+  const runChanges = Number(
+    results &&
+    results[3] &&
+    results[3].meta &&
+    results[3].meta.changes
   );
 
   if (generationChanges !== 1 || runChanges !== 1) {
@@ -670,5 +680,64 @@ export async function activatePcSync(env, payload, options = {}) {
     status: 'active',
     activatedAt,
     idempotent: false
+  };
+}
+
+export async function rollbackPcSync(env, payload, options = {}) {
+  const syncRunId = requireSyncRunId(payload);
+  if (!env || !env.jos_customer_db) {
+    throw new PcSyncContractError(
+      'database_unavailable',
+      '同期用データベースを利用できません。'
+    );
+  }
+
+  const now = options.now instanceof Date ? options.now : new Date();
+  const target = await env.jos_customer_db.prepare(
+    `SELECT r.status, g.is_active, g.is_reconciled,
+            g.activated_at, g.retain_until
+       FROM pc_sync_runs r
+       JOIN pc_sync_generations g
+         ON g.sync_run_id = r.sync_run_id
+      WHERE r.sync_run_id = ?`
+  ).bind(syncRunId).first();
+
+  if (!target) {
+    throw new PcSyncContractError(
+      'rollback_target_not_found',
+      '切戻し対象の世代が見つかりません。'
+    );
+  }
+  if (Number(target.is_active) === 1 && target.status === 'active') {
+    return {
+      ok: true,
+      syncRunId,
+      status: 'active',
+      activatedAt: null,
+      idempotent: true,
+      rollback: true
+    };
+  }
+  if (target.status !== 'reconciled' ||
+      Number(target.is_reconciled) !== 1 ||
+      Number(target.is_active) !== 0 ||
+      !target.activated_at) {
+    throw new PcSyncContractError(
+      'rollback_target_not_eligible',
+      '過去に有効化済みの照合済み世代だけへ切り戻せます。'
+    );
+  }
+  if (!target.retain_until ||
+      now.getTime() >= Date.parse(target.retain_until)) {
+    throw new PcSyncContractError(
+      'rollback_target_expired',
+      '切戻し対象の保持期限が切れています。'
+    );
+  }
+
+  const result = await activatePcSync(env, payload, options);
+  return {
+    ...result,
+    rollback: true
   };
 }

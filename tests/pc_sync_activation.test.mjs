@@ -6,7 +6,7 @@ import {
   activatePcSync
 } from '../src/pc-sync-admin.js';
 
-function fakeDatabase(target, changes = [1, 1, 1]) {
+function fakeDatabase(target, changes = [1, 1, 1, 1]) {
   const state = { batches: [] };
   return {
     state,
@@ -51,10 +51,11 @@ assert.deepEqual(result, {
   idempotent: false
 });
 assert.equal(db.state.batches.length, 1);
-assert.equal(db.state.batches[0].length, 3);
-assert.match(db.state.batches[0][0].sql, /is_active = 0/);
-assert.match(db.state.batches[0][1].sql, /is_active = 1/);
-assert.match(db.state.batches[0][2].sql, /status = 'active'/);
+assert.equal(db.state.batches[0].length, 4);
+assert.match(db.state.batches[0][0].sql, /status = 'reconciled'/);
+assert.match(db.state.batches[0][1].sql, /is_active = 0/);
+assert.match(db.state.batches[0][2].sql, /is_active = 1/);
+assert.match(db.state.batches[0][3].sql, /status = 'active'/);
 
 const retryDb = fakeDatabase({
   status: 'active',
@@ -91,7 +92,7 @@ await assert.rejects(
         status: 'reconciled',
         is_active: 0,
         is_reconciled: 1
-      }, [1, 0, 0])
+      }, [1, 1, 0, 0])
     },
     { syncRunId: 'sync-test-3' }
   ),
