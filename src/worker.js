@@ -1,4 +1,5 @@
 import {
+  activatePcSync,
   receivePcCustomerPage,
   receivePcMetricPage,
   startPcSync,
@@ -254,6 +255,11 @@ async function adminApi(request, env, pathname) {
     if (pathname === '/api/admin/pc-sync/validate') {
       const body = await readJson(request);
       return json(await validatePcSync(env, body));
+    }
+
+    if (pathname === '/api/admin/pc-sync/activate') {
+      const body = await readJson(request);
+      return json(await activatePcSync(env, body));
     }
 
     if (pathname === '/api/admin/profile-updates/pending') {

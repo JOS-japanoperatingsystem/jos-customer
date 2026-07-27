@@ -578,3 +578,97 @@ export async function validatePcSync(env, payload, options = {}) {
     metricHash: receivedMetricHash
   };
 }
+
+export async function activatePcSync(env, payload, options = {}) {
+  const syncRunId = requireSyncRunId(payload);
+  if (!env || !env.jos_customer_db) {
+    throw new PcSyncContractError(
+      'database_unavailable',
+      '同期用データベースを利用できません。'
+    );
+  }
+
+  const db = env.jos_customer_db;
+  const now = options.now instanceof Date ? options.now : new Date();
+  const activatedAt = now.toISOString();
+  const target = await db.prepare(
+    `SELECT r.status, g.is_active, g.is_reconciled
+       FROM pc_sync_runs r
+       JOIN pc_sync_generations g
+         ON g.sync_run_id = r.sync_run_id
+      WHERE r.sync_run_id = ?`
+  ).bind(syncRunId).first();
+
+  if (!target) {
+    throw new PcSyncContractError(
+      'sync_run_not_found',
+      '同期実行が見つかりません。'
+    );
+  }
+  if (target.status === 'active' && Number(target.is_active) === 1) {
+    return {
+      ok: true,
+      syncRunId,
+      status: 'active',
+      activatedAt: null,
+      idempotent: true
+    };
+  }
+  if (target.status !== 'reconciled' ||
+      Number(target.is_reconciled) !== 1 ||
+      Number(target.is_active) !== 0) {
+    throw new PcSyncContractError(
+      'sync_run_not_reconciled',
+      '照合済みの未有効世代だけを有効化できます。'
+    );
+  }
+
+  const statements = [
+    db.prepare(
+      `UPDATE pc_sync_generations
+          SET is_active = 0, superseded_at = ?
+        WHERE is_active = 1 AND generation_id <> ?`
+    ).bind(activatedAt, syncRunId),
+    db.prepare(
+      `UPDATE pc_sync_generations
+          SET is_active = 1, activated_at = ?, superseded_at = NULL
+        WHERE generation_id = ?
+          AND is_reconciled = 1
+          AND is_active = 0`
+    ).bind(activatedAt, syncRunId),
+    db.prepare(
+      `UPDATE pc_sync_runs
+          SET status = 'active', activated_at = ?
+        WHERE sync_run_id = ? AND status = 'reconciled'`
+    ).bind(activatedAt, syncRunId)
+  ];
+
+  const results = await db.batch(statements);
+  const generationChanges = Number(
+    results &&
+    results[1] &&
+    results[1].meta &&
+    results[1].meta.changes
+  );
+  const runChanges = Number(
+    results &&
+    results[2] &&
+    results[2].meta &&
+    results[2].meta.changes
+  );
+
+  if (generationChanges !== 1 || runChanges !== 1) {
+    throw new PcSyncContractError(
+      'activation_not_confirmed',
+      '有効世代の切替結果を確認できませんでした。'
+    );
+  }
+
+  return {
+    ok: true,
+    syncRunId,
+    status: 'active',
+    activatedAt,
+    idempotent: false
+  };
+}
