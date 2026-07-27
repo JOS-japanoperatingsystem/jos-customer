@@ -28,7 +28,8 @@ function orderedRecord(record, keys) {
 }
 
 function sha256(text) {
-  return crypto.createHash('sha256').update(text, 'utf8').digest('hex');
+  return 'sha256:' +
+    crypto.createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
 function dataset(records, keys) {
@@ -59,15 +60,15 @@ assert.equal(zeroMetric.totalSales, 0);
 assert.equal(zeroMetric.lastVisitDate, null);
 assert.equal(zeroMetric.lineStatus, 'unlinked');
 
-assert.match(customers.datasetHash, /^[0-9a-f]{64}$/);
-assert.match(metrics.datasetHash, /^[0-9a-f]{64}$/);
+assert.match(customers.datasetHash, /^sha256:[0-9a-f]{64}$/);
+assert.match(metrics.datasetHash, /^sha256:[0-9a-f]{64}$/);
 assert.equal(
   customers.datasetHash,
-  'c2304fddf0b3b6a4d717b7a9a4df20c0f53ff5c8f67021cd02704417b7a935bf'
+  'sha256:7ab9b5302634a78bfcb90ceb5aae450214d127a52cbd3d0c9c65a961dc87db26'
 );
 assert.equal(
   metrics.datasetHash,
-  'aada905e7e965589c509f700435d5d6162ad5fac317985771c9cdf9df585eefd'
+  'sha256:98f1df28486310354001dfb2cd56d6350a3258bf86f8ad10a2f01521bd83b672'
 );
 
 console.log(`CUSTOMER_DATASET_HASH=${customers.datasetHash}`);
