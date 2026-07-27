@@ -1,5 +1,6 @@
 import {
   receivePcCustomerPage,
+  receivePcMetricPage,
   startPcSync
 } from './pc-sync-admin.js';
 
@@ -242,6 +243,11 @@ async function adminApi(request, env, pathname) {
     if (pathname === '/api/admin/pc-sync/customers') {
       const body = await readJson(request);
       return json(await receivePcCustomerPage(env, body));
+    }
+
+    if (pathname === '/api/admin/pc-sync/metrics') {
+      const body = await readJson(request);
+      return json(await receivePcMetricPage(env, body));
     }
 
     if (pathname === '/api/admin/profile-updates/pending') {
