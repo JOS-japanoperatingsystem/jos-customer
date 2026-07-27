@@ -109,6 +109,9 @@ function validateCommonPage(payload) {
     fail('invalid_page_number', 'pageNumberがtotalPagesを超えています。');
   }
   requireInteger(payload.recordCount, 'recordCount');
+  if (payload.recordCount > 100) {
+    fail('page_too_large', '1ページは100件以下である必要があります。');
+  }
   requireHash(payload.pageHash, 'pageHash');
   if (!Array.isArray(payload.records)) {
     fail('invalid_records', 'recordsは配列である必要があります。');

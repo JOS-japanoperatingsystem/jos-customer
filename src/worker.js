@@ -1,4 +1,7 @@
-import { startPcSync } from './pc-sync-admin.js';
+import {
+  receivePcCustomerPage,
+  startPcSync
+} from './pc-sync-admin.js';
 
 const LINE_CHANNEL_ID = '2010784641';
 
@@ -234,6 +237,11 @@ async function adminApi(request, env, pathname) {
     if (pathname === '/api/admin/pc-sync/start') {
       const body = await readJson(request);
       return json(await startPcSync(env, body));
+    }
+
+    if (pathname === '/api/admin/pc-sync/customers') {
+      const body = await readJson(request);
+      return json(await receivePcCustomerPage(env, body));
     }
 
     if (pathname === '/api/admin/profile-updates/pending') {
