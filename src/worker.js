@@ -1,3 +1,5 @@
+import { startPcSync } from './pc-sync-admin.js';
+
 const LINE_CHANNEL_ID = '2010784641';
 
 function json(data, status = 200) {
@@ -229,6 +231,11 @@ async function adminApi(request, env, pathname) {
   if (!adminAuthorized(request, env)) return json({ ok: false, message: '管理認証に失敗しました。' }, 401);
 
   try {
+    if (pathname === '/api/admin/pc-sync/start') {
+      const body = await readJson(request);
+      return json(await startPcSync(env, body));
+    }
+
     if (pathname === '/api/admin/profile-updates/pending') {
       const result = await env.jos_customer_db.prepare(
         `SELECT request_id, jos_customer_id, last_name, first_name,
@@ -669,7 +676,11 @@ async function adminApi(request, env, pathname) {
 
     return json({ ok: false, message: '管理APIが見つかりません。' }, 404);
   } catch (error) {
-    return json({ ok: false, message: String(error && error.message ? error.message : '処理に失敗しました。') }, 400);
+    return json({
+      ok: false,
+      errorCode: error && error.code ? String(error.code) : 'request_failed',
+      message: String(error && error.message ? error.message : '処理に失敗しました。')
+    }, 400);
   }
 }
 
