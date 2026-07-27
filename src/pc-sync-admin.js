@@ -13,6 +13,32 @@ function addDays(date, days) {
   return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
 }
 
+async function hashRowHashes(rows) {
+  const input = rows.map(row => String(row.row_hash || '')).join('');
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(input)
+  );
+  const hex = Array.from(new Uint8Array(digest))
+    .map(value => value.toString(16).padStart(2, '0'))
+    .join('');
+  return `sha256:${hex}`;
+}
+
+function requireSyncRunId(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload) ||
+      Object.keys(payload).length !== 1 ||
+      typeof payload.syncRunId !== 'string' ||
+      !payload.syncRunId.trim() ||
+      payload.syncRunId.length > 100) {
+    throw new PcSyncContractError(
+      'invalid_sync_run_id',
+      '同期実行IDが正しくありません。'
+    );
+  }
+  return payload.syncRunId.trim();
+}
+
 export async function startPcSync(env, payload, options = {}) {
   validateStartPayload(payload);
 
@@ -346,5 +372,209 @@ export async function receivePcMetricPage(env, payload, options = {}) {
     pageNumber: payload.pageNumber,
     recordCount: payload.recordCount,
     idempotent: false
+  };
+}
+
+export async function validatePcSync(env, payload, options = {}) {
+  const syncRunId = requireSyncRunId(payload);
+  if (!env || !env.jos_customer_db) {
+    throw new PcSyncContractError(
+      'database_unavailable',
+      '同期用データベースを利用できません。'
+    );
+  }
+
+  const now = options.now instanceof Date ? options.now : new Date();
+  const createId = typeof options.createId === 'function'
+    ? options.createId
+    : () => crypto.randomUUID();
+  const db = env.jos_customer_db;
+
+  const run = await db.prepare(
+    `SELECT status, expires_at,
+            source_customer_count, source_metric_count,
+            customer_page_count, metric_page_count,
+            source_customer_hash, source_metric_hash
+       FROM pc_sync_runs
+      WHERE sync_run_id = ?`
+  ).bind(syncRunId).first();
+
+  if (!run) {
+    throw new PcSyncContractError(
+      'sync_run_not_found',
+      '同期実行が見つかりません。'
+    );
+  }
+  if (run.status !== 'building') {
+    throw new PcSyncContractError(
+      'sync_run_not_building',
+      '照合可能な同期実行ではありません。'
+    );
+  }
+  if (!run.expires_at || now.getTime() >= Date.parse(run.expires_at)) {
+    throw new PcSyncContractError(
+      'sync_run_expired',
+      '同期実行の有効期限が切れています。'
+    );
+  }
+
+  const customerPages = await db.prepare(
+    `SELECT COUNT(*) AS page_count,
+            COALESCE(SUM(record_count), 0) AS record_count
+       FROM pc_sync_received_pages
+      WHERE sync_run_id = ? AND dataset_type = 'customers'`
+  ).bind(syncRunId).first();
+  const metricPages = await db.prepare(
+    `SELECT COUNT(*) AS page_count,
+            COALESCE(SUM(record_count), 0) AS record_count
+       FROM pc_sync_received_pages
+      WHERE sync_run_id = ? AND dataset_type = 'metrics'`
+  ).bind(syncRunId).first();
+  const customerCount = await db.prepare(
+    `SELECT COUNT(*) AS value
+       FROM pc_customers_snapshot
+      WHERE generation_id = ?`
+  ).bind(syncRunId).first();
+  const metricCount = await db.prepare(
+    `SELECT COUNT(*) AS value
+       FROM pc_customer_metrics_snapshot
+      WHERE generation_id = ?`
+  ).bind(syncRunId).first();
+  const customersWithoutMetrics = await db.prepare(
+    `SELECT COUNT(*) AS value
+       FROM pc_customers_snapshot c
+       LEFT JOIN pc_customer_metrics_snapshot m
+         ON m.generation_id = c.generation_id
+        AND m.customer_id = c.customer_id
+      WHERE c.generation_id = ? AND m.customer_id IS NULL`
+  ).bind(syncRunId).first();
+  const metricsWithoutCustomers = await db.prepare(
+    `SELECT COUNT(*) AS value
+       FROM pc_customer_metrics_snapshot m
+       LEFT JOIN pc_customers_snapshot c
+         ON c.generation_id = m.generation_id
+        AND c.customer_id = m.customer_id
+      WHERE m.generation_id = ? AND c.customer_id IS NULL`
+  ).bind(syncRunId).first();
+  const customerRows = await db.prepare(
+    `SELECT customer_id, row_hash
+       FROM pc_customers_snapshot
+      WHERE generation_id = ?
+      ORDER BY customer_id ASC`
+  ).bind(syncRunId).all();
+  const metricRows = await db.prepare(
+    `SELECT customer_id, row_hash
+       FROM pc_customer_metrics_snapshot
+      WHERE generation_id = ?
+      ORDER BY customer_id ASC`
+  ).bind(syncRunId).all();
+
+  const receivedCustomerHash = await hashRowHashes(
+    customerRows.results || []
+  );
+  const receivedMetricHash = await hashRowHashes(
+    metricRows.results || []
+  );
+
+  const checks = [
+    ['customer_page_count',
+      Number(customerPages.page_count) === Number(run.customer_page_count)],
+    ['metric_page_count',
+      Number(metricPages.page_count) === Number(run.metric_page_count)],
+    ['customer_record_count',
+      Number(customerPages.record_count) === Number(run.source_customer_count)],
+    ['metric_record_count',
+      Number(metricPages.record_count) === Number(run.source_metric_count)],
+    ['customer_snapshot_count',
+      Number(customerCount.value) === Number(run.source_customer_count)],
+    ['metric_snapshot_count',
+      Number(metricCount.value) === Number(run.source_metric_count)],
+    ['customers_without_metrics',
+      Number(customersWithoutMetrics.value) === 0],
+    ['metrics_without_customers',
+      Number(metricsWithoutCustomers.value) === 0],
+    ['customer_dataset_hash',
+      receivedCustomerHash === run.source_customer_hash],
+    ['metric_dataset_hash',
+      receivedMetricHash === run.source_metric_hash]
+  ];
+
+  const failedChecks = checks
+    .filter(([, matched]) => !matched)
+    .map(([name]) => name);
+  const finishedAt = now.toISOString();
+  const statements = checks.map(([fieldName, matched]) =>
+    db.prepare(
+      `INSERT INTO pc_reconciliation_results
+         (result_id, sync_run_id, scope, field_name, matched, created_at)
+       VALUES (?, ?, 'global', ?, ?, ?)`
+    ).bind(
+      createId(),
+      syncRunId,
+      fieldName,
+      matched ? 1 : 0,
+      finishedAt
+    )
+  );
+
+  if (failedChecks.length) {
+    statements.push(db.prepare(
+      `UPDATE pc_sync_runs
+          SET status = 'failed', finished_at = ?,
+              received_customer_count = ?,
+              received_metric_count = ?,
+              received_customer_hash = ?,
+              received_metric_hash = ?,
+              error_code = 'reconciliation_failed',
+              error_message = ?
+        WHERE sync_run_id = ? AND status = 'building'`
+    ).bind(
+      finishedAt,
+      Number(customerCount.value),
+      Number(metricCount.value),
+      receivedCustomerHash,
+      receivedMetricHash,
+      failedChecks.join(','),
+      syncRunId
+    ));
+    await db.batch(statements);
+    throw new PcSyncContractError(
+      'reconciliation_failed',
+      '同期データの照合に失敗しました。'
+    );
+  }
+
+  statements.push(db.prepare(
+    `UPDATE pc_sync_runs
+        SET status = 'reconciled', finished_at = ?,
+            received_customer_count = ?,
+            received_metric_count = ?,
+            received_customer_hash = ?,
+            received_metric_hash = ?,
+            error_code = NULL, error_message = NULL
+      WHERE sync_run_id = ? AND status = 'building'`
+  ).bind(
+    finishedAt,
+    Number(customerCount.value),
+    Number(metricCount.value),
+    receivedCustomerHash,
+    receivedMetricHash,
+    syncRunId
+  ));
+  statements.push(db.prepare(
+    `UPDATE pc_sync_generations
+        SET is_reconciled = 1
+      WHERE generation_id = ? AND is_active = 0`
+  ).bind(syncRunId));
+  await db.batch(statements);
+
+  return {
+    ok: true,
+    syncRunId,
+    status: 'reconciled',
+    customerCount: Number(customerCount.value),
+    metricCount: Number(metricCount.value),
+    customerHash: receivedCustomerHash,
+    metricHash: receivedMetricHash
   };
 }

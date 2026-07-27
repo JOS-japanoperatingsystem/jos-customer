@@ -1,7 +1,8 @@
 import {
   receivePcCustomerPage,
   receivePcMetricPage,
-  startPcSync
+  startPcSync,
+  validatePcSync
 } from './pc-sync-admin.js';
 
 const LINE_CHANNEL_ID = '2010784641';
@@ -248,6 +249,11 @@ async function adminApi(request, env, pathname) {
     if (pathname === '/api/admin/pc-sync/metrics') {
       const body = await readJson(request);
       return json(await receivePcMetricPage(env, body));
+    }
+
+    if (pathname === '/api/admin/pc-sync/validate') {
+      const body = await readJson(request);
+      return json(await validatePcSync(env, body));
     }
 
     if (pathname === '/api/admin/profile-updates/pending') {
