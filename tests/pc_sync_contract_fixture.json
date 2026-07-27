@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "customers": [
+    {
+      "customerId": "T0002",
+      "name": "テスト 二郎",
+      "kana": "テスト ジロウ",
+      "phone": null,
+      "customerType": "学生",
+      "birthDate": null,
+      "route": null,
+      "referrer": null,
+      "storeMemo": null
+    },
+    {
+      "customerId": "T0001",
+      "name": "テスト 一郎",
+      "kana": "テスト イチロウ",
+      "phone": "090-0000-0001",
+      "customerType": "一般",
+      "birthDate": "2000-01-01",
+      "route": "LINE",
+      "referrer": null,
+      "storeMemo": null
+    }
+  ],
+  "metrics": [
+    {
+      "customerId": "T0002",
+      "visitCount": 2,
+      "firstVisitDate": "2026-06-01",
+      "lastVisitDate": "2026-07-01",
+      "nextReservationAt": null,
+      "nextReservationId": null,
+      "nextReservationMenu": null,
+      "totalSales": 7000,
+      "averageSpend": 3500,
+      "normalCancelCount": 1,
+      "sameDayCancelCount": 0,
+      "noShowCount": 0,
+      "lineStatus": "linked",
+      "lineDisplayName": "テスト二郎",
+      "metricsStatus": "verified"
+    },
+    {
+      "customerId": "T0001",
+      "visitCount": 0,
+      "firstVisitDate": null,
+      "lastVisitDate": null,
+      "nextReservationAt": null,
+      "nextReservationId": null,
+      "nextReservationMenu": null,
+      "totalSales": 0,
+      "averageSpend": 0,
+      "normalCancelCount": 0,
+      "sameDayCancelCount": 0,
+      "noShowCount": 0,
+      "lineStatus": "unlinked",
+      "lineDisplayName": null,
+      "metricsStatus": "verified"
+    }
+  ]
+}
