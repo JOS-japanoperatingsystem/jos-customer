@@ -1027,3 +1027,107 @@ export async function getPcSnapshotManifest(env, options = {}) {
     }))
   };
 }
+
+export async function getPcAdminCustomers(env, payload = {}, options = {}) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new PcSyncContractError(
+      'invalid_read_request',
+      '顧客一覧の取得条件が正しくありません。'
+    );
+  }
+  const allowedKeys = ['page', 'pageSize'];
+  if (Object.keys(payload).some(key => !allowedKeys.includes(key))) {
+    throw new PcSyncContractError(
+      'invalid_read_request',
+      '許可されていない顧客一覧の取得条件があります。'
+    );
+  }
+  const page = payload.page === undefined ? 1 : Number(payload.page);
+  const pageSize = payload.pageSize === undefined
+    ? 50
+    : Number(payload.pageSize);
+  if (!Number.isInteger(page) || page < 1 ||
+      !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) {
+    throw new PcSyncContractError(
+      'invalid_pagination',
+      'ページ番号または取得件数が正しくありません。'
+    );
+  }
+
+  const manifest = await getPcSnapshotManifest(env, options);
+  const offset = (page - 1) * pageSize;
+  if (offset > manifest.customerCount && manifest.customerCount !== 0) {
+    throw new PcSyncContractError(
+      'page_out_of_range',
+      '指定された顧客一覧ページは存在しません。'
+    );
+  }
+  const result = await env.jos_customer_db.prepare(
+    `SELECT c.customer_id, c.customer_name, c.customer_kana, c.phone,
+            c.customer_type, c.birth_date, c.route, c.referrer,
+            c.store_memo, m.visit_count, m.first_visit_date,
+            m.last_visit_date, m.next_reservation_at,
+            m.next_reservation_id, m.next_reservation_menu,
+            m.total_sales, m.average_spend, m.normal_cancel_count,
+            m.same_day_cancel_count, m.no_show_count, m.line_status,
+            m.line_display_name, m.metrics_status
+       FROM pc_customers_snapshot c
+       JOIN pc_customer_metrics_snapshot m
+         ON m.generation_id = c.generation_id
+        AND m.customer_id = c.customer_id
+      WHERE c.generation_id = ?
+      ORDER BY c.customer_id
+      LIMIT ? OFFSET ?`
+  ).bind(manifest.generationId, pageSize, offset).all();
+  const rows = result && Array.isArray(result.results)
+    ? result.results
+    : [];
+  if (rows.length > pageSize ||
+      rows.some(row =>
+        row.metrics_status !== 'verified' ||
+        !['linked', 'unlinked', 'unavailable'].includes(row.line_status)
+      )) {
+    throw new PcSyncContractError(
+      'replica_data_invalid',
+      'D1顧客一覧に未確認または不正なデータがあります。'
+    );
+  }
+
+  return {
+    ok: true,
+    schemaVersion: manifest.schemaVersion,
+    contractName: manifest.contractName,
+    generationId: manifest.generationId,
+    syncRunId: manifest.syncRunId,
+    sourceGeneratedAt: manifest.sourceGeneratedAt,
+    page,
+    pageSize,
+    totalCount: manifest.customerCount,
+    hasNext: offset + rows.length < manifest.customerCount,
+    records: rows.map(row => ({
+      customerId: row.customer_id,
+      name: row.customer_name,
+      kana: row.customer_kana,
+      phone: row.phone,
+      customerType: row.customer_type,
+      birthDate: row.birth_date,
+      route: row.route,
+      referrer: row.referrer,
+      storeMemo: row.store_memo,
+      visitCount: Number(row.visit_count),
+      firstVisitDate: row.first_visit_date,
+      lastVisitDate: row.last_visit_date,
+      nextReservationAt: row.next_reservation_at,
+      nextReservationId: row.next_reservation_id,
+      nextReservationMenu: row.next_reservation_menu,
+      totalSales: Number(row.total_sales),
+      averageSpend: Number(row.average_spend),
+      normalCancelCount: Number(row.normal_cancel_count),
+      sameDayCancelCount: Number(row.same_day_cancel_count),
+      noShowCount: Number(row.no_show_count),
+      lineStatus: row.line_status,
+      lineDisplayName: row.line_display_name,
+      metricsStatus: row.metrics_status
+    }))
+  };
+}

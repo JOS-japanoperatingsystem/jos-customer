@@ -1,6 +1,7 @@
 import {
   activatePcSync,
   expirePcSyncRuns,
+  getPcAdminCustomers,
   getPcSnapshotManifest,
   getPcSyncStatus,
   receivePcCustomerPage,
@@ -281,6 +282,11 @@ async function adminApi(request, env, pathname) {
 
     if (pathname === '/api/admin/pc/snapshot-manifest') {
       return json(await getPcSnapshotManifest(env));
+    }
+
+    if (pathname === '/api/admin/pc/customers') {
+      const body = await readJson(request);
+      return json(await getPcAdminCustomers(env, body));
     }
 
     if (pathname === '/api/admin/profile-updates/pending') {
