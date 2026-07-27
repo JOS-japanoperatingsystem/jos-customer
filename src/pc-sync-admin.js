@@ -741,3 +741,129 @@ export async function rollbackPcSync(env, payload, options = {}) {
     rollback: true
   };
 }
+
+export async function getPcSyncStatus(env, options = {}) {
+  if (!env || !env.jos_customer_db) {
+    throw new PcSyncContractError(
+      'database_unavailable',
+      '同期用データベースを利用できません。'
+    );
+  }
+
+  const now = options.now instanceof Date ? options.now : new Date();
+  const db = env.jos_customer_db;
+  const active = await db.prepare(
+    `SELECT r.sync_run_id, r.status, r.started_at, r.finished_at,
+            r.source_generated_at, r.source_customer_count,
+            r.received_customer_count, r.source_metric_count,
+            r.received_metric_count, r.error_code, r.error_message,
+            r.activated_at, g.generation_id, g.is_active,
+            g.is_reconciled, g.retain_until
+       FROM pc_sync_generations g
+       JOIN pc_sync_runs r ON r.sync_run_id = g.sync_run_id
+      WHERE g.is_active = 1
+      LIMIT 2`
+  ).all();
+  const recent = await db.prepare(
+    `SELECT sync_run_id, status, started_at, finished_at, expires_at,
+            source_generated_at, error_code, error_message, activated_at
+       FROM pc_sync_runs
+      ORDER BY started_at DESC
+      LIMIT 10`
+  ).all();
+
+  const activeRows = active && Array.isArray(active.results)
+    ? active.results
+    : [];
+  const recentRows = recent && Array.isArray(recent.results)
+    ? recent.results
+    : [];
+  const issues = [];
+
+  if (activeRows.length === 0) {
+    issues.push({
+      code: 'active_generation_missing',
+      message: '有効な同期世代がありません。'
+    });
+  } else if (activeRows.length > 1) {
+    issues.push({
+      code: 'multiple_active_generations',
+      message: '有効な同期世代が複数あります。'
+    });
+  } else {
+    const row = activeRows[0];
+    if (row.status !== 'active' ||
+        Number(row.is_active) !== 1 ||
+        Number(row.is_reconciled) !== 1) {
+      issues.push({
+        code: 'active_generation_inconsistent',
+        message: '有効世代の状態が一致していません。'
+      });
+    }
+  }
+
+  const runs = recentRows.map(row => {
+    const expired = row.status === 'building' &&
+      (!row.expires_at ||
+       !Number.isFinite(Date.parse(row.expires_at)) ||
+       now.getTime() >= Date.parse(row.expires_at));
+    if (expired) {
+      issues.push({
+        code: 'sync_run_expired',
+        syncRunId: row.sync_run_id,
+        message: '未完了の同期が期限切れです。'
+      });
+    }
+    if (row.status === 'failed') {
+      issues.push({
+        code: 'sync_run_failed',
+        syncRunId: row.sync_run_id,
+        errorCode: row.error_code || null,
+        message: row.error_message || '同期に失敗しました。'
+      });
+    }
+    return {
+      syncRunId: row.sync_run_id,
+      status: row.status,
+      startedAt: row.started_at,
+      finishedAt: row.finished_at || null,
+      expiresAt: row.expires_at,
+      sourceGeneratedAt: row.source_generated_at,
+      activatedAt: row.activated_at || null,
+      errorCode: row.error_code || null,
+      errorMessage: row.error_message || null,
+      expired
+    };
+  });
+
+  const blockingCodes = new Set([
+    'active_generation_missing',
+    'multiple_active_generations',
+    'active_generation_inconsistent'
+  ]);
+  const health = issues.some(issue => blockingCodes.has(issue.code))
+    ? 'unavailable'
+    : issues.length > 0
+      ? 'degraded'
+      : 'healthy';
+  const activeRow = activeRows.length === 1 ? activeRows[0] : null;
+
+  return {
+    ok: true,
+    checkedAt: now.toISOString(),
+    health,
+    canServeFromD1: health !== 'unavailable',
+    activeGeneration: activeRow ? {
+      generationId: activeRow.generation_id,
+      syncRunId: activeRow.sync_run_id,
+      status: activeRow.status,
+      sourceGeneratedAt: activeRow.source_generated_at,
+      activatedAt: activeRow.activated_at || null,
+      retainUntil: activeRow.retain_until,
+      customerCount: Number(activeRow.received_customer_count),
+      metricCount: Number(activeRow.received_metric_count)
+    } : null,
+    issues,
+    recentRuns: runs
+  };
+}
