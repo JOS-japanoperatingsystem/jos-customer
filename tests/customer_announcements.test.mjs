@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { getCustomerAnnouncements } from '../src/worker.js';
 
 const now = new Date('2026-07-28T04:00:00.000Z');
@@ -44,5 +45,19 @@ assert.deepEqual(result.announcements[0], {
 });
 assert.equal(JSON.stringify(result).includes('internal_note'), false);
 assert.equal(JSON.stringify(result).includes('管理メモ'), false);
+
+const html = await readFile(
+  new URL('../public/index.html', import.meta.url),
+  'utf8'
+);
+const homeStart = html.indexOf('<div id="homeView"');
+const mypageStart = html.indexOf('<div id="mypageView"');
+const announcementStart = html.indexOf('<div id="announcementSection"');
+assert.ok(homeStart >= 0);
+assert.ok(announcementStart > homeStart);
+assert.ok(announcementStart < mypageStart);
+assert.match(html, /if \(viewName === 'home'\) loadAnnouncements\(\)/);
+assert.doesNotMatch(html, /現在のお知らせはありません。/);
+assert.match(html, /if \(announcements\.length > 0\)/);
 
 console.log('Customer announcements API: OK');

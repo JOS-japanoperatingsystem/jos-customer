@@ -170,6 +170,11 @@
           <div id="nextReservationDate" class="next-date"></div>
           <div id="nextReservationMenu" class="next-menu"></div>
         </div>
+        <div id="announcementSection" class="mypage-section" hidden>
+          <div class="mypage-section-title">お知らせ</div>
+          <div id="announcementLoading" class="muted">確認中です</div>
+          <div id="announcementList" hidden></div>
+        </div>
       </div>
 
       <div id="bookingView" class="card" hidden>
@@ -242,13 +247,6 @@
 
       <div id="mypageView" class="card" hidden>
         <h2 class="view-title">マイページ</h2>
-        <div class="mypage-section">
-          <div class="mypage-section-title">お知らせ</div>
-          <div id="announcementLoading" class="muted">確認中です</div>
-          <div id="announcementEmpty" class="muted" hidden>現在のお知らせはありません。</div>
-          <div id="announcementList" hidden></div>
-          <div id="announcementError" class="error" hidden></div>
-        </div>
         <div class="mypage-section">
           <div class="mypage-section-title">連携状況</div>
           <div class="connection-row"><span>LINE連携</span><span class="connection-state">本人確認済み</span></div>
@@ -607,10 +605,9 @@
     }
 
     async function loadAnnouncements() {
+      byId('announcementSection').hidden = true;
       byId('announcementLoading').hidden = false;
-      byId('announcementEmpty').hidden = true;
       byId('announcementList').hidden = true;
-      byId('announcementError').hidden = true;
       const list = byId('announcementList');
       list.replaceChildren();
       try {
@@ -633,12 +630,12 @@
           article.append(title, date, body);
           list.appendChild(article);
         });
-        byId('announcementEmpty').hidden = announcements.length !== 0;
-        list.hidden = announcements.length === 0;
+        if (announcements.length > 0) {
+          byId('announcementSection').hidden = false;
+          list.hidden = false;
+        }
       } catch (_) {
-        byId('announcementError').textContent =
-          'お知らせを読み込めませんでした。時間をおいて再度お試しください。';
-        byId('announcementError').hidden = false;
+        byId('announcementSection').hidden = true;
       } finally {
         byId('announcementLoading').hidden = true;
       }
@@ -656,7 +653,7 @@
         else showMenuError('店舗連携完了後にメニューを選択できます。');
       }
       if (viewName === 'history') loadReservationManagement();
-      if (viewName === 'mypage') loadAnnouncements();
+      if (viewName === 'home') loadAnnouncements();
       window.scrollTo({ top:0, behavior:'smooth' });
     }
 
