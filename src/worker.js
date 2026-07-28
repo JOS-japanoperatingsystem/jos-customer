@@ -35,6 +35,16 @@ async function readJson(request) {
   }
 }
 
+async function readAnnouncementJson(request) {
+  const contentLength = Number(request.headers.get('content-length') || 0);
+  if (contentLength > 3000000) throw new Error('画像を含む送信データが大きすぎます。');
+  try {
+    return await request.json();
+  } catch (_) {
+    throw new Error('送信形式が正しくありません。');
+  }
+}
+
 function checkSameOrigin(request) {
   const requestUrl = new URL(request.url);
   const origin = request.headers.get('origin');
@@ -162,7 +172,7 @@ export async function getCustomerAnnouncements(env, options = {}) {
   const now = options.now instanceof Date ? options.now : new Date();
   const nowIso = now.toISOString();
   const result = await env.jos_customer_db.prepare(
-    `SELECT announcement_id, title, body, published_at, expires_at
+    `SELECT announcement_id, title, body, published_at, expires_at, image_key
        FROM customer_announcements
       WHERE is_published = 1
         AND published_at <= ?
@@ -177,10 +187,132 @@ export async function getCustomerAnnouncements(env, options = {}) {
       announcementId: String(row.announcement_id || ''),
       title: String(row.title || ''),
       body: String(row.body || ''),
+      imageUrl: row.image_key
+        ? `/api/announcement-image/${encodeURIComponent(String(row.image_key))}`
+        : '',
       publishedAt: String(row.published_at || ''),
       expiresAt: row.expires_at ? String(row.expires_at) : ''
     }))
   };
+}
+
+function announcementImageInput(input) {
+  const match = String(input || '').match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/);
+  if (!match) throw new Error('画像はJPG・PNG・WebP形式で選択してください。');
+  const bytes = Uint8Array.from(atob(match[2]), char => char.charCodeAt(0));
+  if (!bytes.length || bytes.length > 2000000) {
+    throw new Error('画像は2MB以下にしてください。');
+  }
+  return { bytes, contentType: match[1] };
+}
+
+export async function saveCustomerAnnouncement(env, input, options = {}) {
+  input = input && typeof input === 'object' ? input : {};
+  const now = options.now instanceof Date ? options.now : new Date();
+  const nowIso = now.toISOString();
+  const announcementId = normalizeText(input.announcementId, 100) ||
+    crypto.randomUUID().replace(/-/g, '');
+  const title = normalizeText(input.title, 120);
+  const body = normalizeText(input.body, 3000);
+  const publishedAt = normalizeText(input.publishedAt, 40) || nowIso;
+  const expiresAt = normalizeText(input.expiresAt, 40) || null;
+  const isPublished = input.isPublished === true ? 1 : 0;
+  let imageKey = normalizeText(input.existingImageKey, 200) || null;
+  let imageContentType = null;
+
+  if (input.removeImage === true) imageKey = null;
+  if (input.imageData) {
+    const image = announcementImageInput(input.imageData);
+    const extension = image.contentType === 'image/png'
+      ? 'png'
+      : image.contentType === 'image/webp' ? 'webp' : 'jpg';
+    imageKey = `${announcementId}/${crypto.randomUUID()}.${extension}`;
+    imageContentType = image.contentType;
+    await env.ANNOUNCEMENT_IMAGES.put(imageKey, image.bytes, {
+      httpMetadata: { contentType: image.contentType }
+    });
+  }
+
+  if (!title && !body && !imageKey) {
+    throw new Error('画像または文字を1つ以上入力してください。');
+  }
+  if (Number.isNaN(Date.parse(publishedAt)) ||
+      (expiresAt && Number.isNaN(Date.parse(expiresAt)))) {
+    throw new Error('公開日時が正しくありません。');
+  }
+  if (expiresAt && expiresAt <= publishedAt) {
+    throw new Error('公開終了は公開開始より後にしてください。');
+  }
+
+  await env.jos_customer_db.prepare(
+    `INSERT INTO customer_announcements
+       (announcement_id, title, body, published_at, expires_at, is_published,
+        created_at, updated_at, image_key, image_content_type)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(announcement_id) DO UPDATE SET
+       title = excluded.title,
+       body = excluded.body,
+       published_at = excluded.published_at,
+       expires_at = excluded.expires_at,
+       is_published = excluded.is_published,
+       updated_at = excluded.updated_at,
+       image_key = excluded.image_key,
+       image_content_type = COALESCE(excluded.image_content_type, image_content_type)`
+  ).bind(
+    announcementId, title, body, publishedAt, expiresAt, isPublished,
+    nowIso, nowIso, imageKey, imageContentType
+  ).run();
+
+  return {
+    ok: true,
+    announcementId,
+    isPublished: isPublished === 1,
+    hasImage: Boolean(imageKey)
+  };
+}
+
+export async function listCustomerAnnouncementsForAdmin(env) {
+  const result = await env.jos_customer_db.prepare(
+    `SELECT announcement_id, title, body, published_at, expires_at,
+            is_published, image_key
+       FROM customer_announcements
+      ORDER BY updated_at DESC
+      LIMIT 100`
+  ).all();
+  return {
+    ok: true,
+    announcements: (result.results || []).map(row => ({
+      announcementId: String(row.announcement_id || ''),
+      title: String(row.title || ''),
+      body: String(row.body || ''),
+      publishedAt: String(row.published_at || ''),
+      expiresAt: row.expires_at ? String(row.expires_at) : '',
+      isPublished: Number(row.is_published) === 1,
+      imageKey: String(row.image_key || ''),
+      imageUrl: row.image_key
+        ? `/api/announcement-image/${encodeURIComponent(String(row.image_key))}`
+        : ''
+    }))
+  };
+}
+
+async function getAnnouncementImage(request, env, pathname) {
+  if (request.method !== 'GET') {
+    return json({ ok: false, message: 'GETのみ利用できます。' }, 405);
+  }
+  const prefix = '/api/announcement-image/';
+  const key = decodeURIComponent(pathname.slice(prefix.length));
+  if (!key || key.includes('..') || key.startsWith('/')) {
+    return json({ ok: false, message: '画像が見つかりません。' }, 404);
+  }
+  const object = await env.ANNOUNCEMENT_IMAGES.get(key);
+  if (!object) return json({ ok: false, message: '画像が見つかりません。' }, 404);
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set('etag', object.httpEtag);
+  headers.set('cache-control', 'public, max-age=86400');
+  headers.set('x-content-type-options', 'nosniff');
+  return new Response(object.body, { headers });
 }
 
 async function saveProfile(env, identity, input) {
@@ -267,6 +399,15 @@ async function adminApi(request, env, pathname) {
   if (!adminAuthorized(request, env)) return json({ ok: false, message: '管理認証に失敗しました。' }, 401);
 
   try {
+    if (pathname === '/api/admin/announcements/list') {
+      return json(await listCustomerAnnouncementsForAdmin(env));
+    }
+
+    if (pathname === '/api/admin/announcements/save') {
+      const body = await readAnnouncementJson(request);
+      return json(await saveCustomerAnnouncement(env, body));
+    }
+
     if (pathname === '/api/admin/pc-sync/start') {
       const body = await readJson(request);
       return json(await startPcSync(env, body));
@@ -1259,6 +1400,9 @@ async function api(request, env, pathname) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.pathname.startsWith('/api/announcement-image/')) {
+      return getAnnouncementImage(request, env, url.pathname);
+    }
     if (url.pathname.startsWith('/api/admin/')) return adminApi(request, env, url.pathname);
     if (url.pathname.startsWith('/api/')) return api(request, env, url.pathname);
     return env.ASSETS.fetch(request);

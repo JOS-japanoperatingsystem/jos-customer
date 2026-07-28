@@ -618,6 +618,17 @@
         announcements.forEach(item => {
           const article = document.createElement('article');
           article.className = 'policy-panel';
+          if (item.imageUrl) {
+            const image = document.createElement('img');
+            image.src = String(item.imageUrl);
+            image.alt = String(item.title || 'お知らせ画像');
+            image.loading = 'lazy';
+            image.style.width = '100%';
+            image.style.height = 'auto';
+            image.style.borderRadius = '12px';
+            image.style.marginBottom = '10px';
+            article.appendChild(image);
+          }
           const title = document.createElement('div');
           title.className = 'policy-title';
           title.textContent = String(item.title || '');
@@ -627,7 +638,9 @@
           const body = document.createElement('div');
           body.style.whiteSpace = 'pre-wrap';
           body.textContent = String(item.body || '');
-          article.append(title, date, body);
+          if (item.title) article.appendChild(title);
+          article.appendChild(date);
+          if (item.body) article.appendChild(body);
           list.appendChild(article);
         });
         if (announcements.length > 0) {

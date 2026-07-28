@@ -16,5 +16,11 @@
 			"database_name": "jos-customer-db",
 			"database_id": "8a600a3d-fcfc-4963-af50-1d321299ea90"
 		}
+	],
+	"r2_buckets": [
+		{
+			"binding": "ANNOUNCEMENT_IMAGES",
+			"bucket_name": "jos-customer-announcements"
+		}
 	]
 }

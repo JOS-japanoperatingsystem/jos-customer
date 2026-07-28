@@ -21,6 +21,7 @@ const env = {
               announcement_id: 'notice-1',
               title: '営業時間のお知らせ',
               body: '8月1日は17時まで営業します。',
+              image_key: null,
               published_at: '2026-07-28T03:00:00.000Z',
               expires_at: '2026-08-02T00:00:00.000Z',
               internal_note: '返してはいけない管理メモ'
@@ -40,6 +41,7 @@ assert.deepEqual(result.announcements[0], {
   announcementId: 'notice-1',
   title: '営業時間のお知らせ',
   body: '8月1日は17時まで営業します。',
+  imageUrl: '',
   publishedAt: '2026-07-28T03:00:00.000Z',
   expiresAt: '2026-08-02T00:00:00.000Z'
 });
