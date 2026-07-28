@@ -243,6 +243,13 @@
       <div id="mypageView" class="card" hidden>
         <h2 class="view-title">マイページ</h2>
         <div class="mypage-section">
+          <div class="mypage-section-title">お知らせ</div>
+          <div id="announcementLoading" class="muted">確認中です</div>
+          <div id="announcementEmpty" class="muted" hidden>現在のお知らせはありません。</div>
+          <div id="announcementList" hidden></div>
+          <div id="announcementError" class="error" hidden></div>
+        </div>
+        <div class="mypage-section">
           <div class="mypage-section-title">連携状況</div>
           <div class="connection-row"><span>LINE連携</span><span class="connection-state">本人確認済み</span></div>
           <div class="connection-row"><span>店舗連携</span><span id="mypageLinkState" class="connection-state"></span></div>
@@ -593,6 +600,50 @@
       }
     }
 
+    function formatAnnouncementDate(value) {
+      const text = String(value || '');
+      const match = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+      return match ? `${match[1]}/${match[2]}/${match[3]}` : '';
+    }
+
+    async function loadAnnouncements() {
+      byId('announcementLoading').hidden = false;
+      byId('announcementEmpty').hidden = true;
+      byId('announcementList').hidden = true;
+      byId('announcementError').hidden = true;
+      const list = byId('announcementList');
+      list.replaceChildren();
+      try {
+        const result = await callApi('/api/announcements');
+        const announcements = Array.isArray(result.announcements)
+          ? result.announcements
+          : [];
+        announcements.forEach(item => {
+          const article = document.createElement('article');
+          article.className = 'policy-panel';
+          const title = document.createElement('div');
+          title.className = 'policy-title';
+          title.textContent = String(item.title || '');
+          const date = document.createElement('div');
+          date.className = 'muted';
+          date.textContent = formatAnnouncementDate(item.publishedAt);
+          const body = document.createElement('div');
+          body.style.whiteSpace = 'pre-wrap';
+          body.textContent = String(item.body || '');
+          article.append(title, date, body);
+          list.appendChild(article);
+        });
+        byId('announcementEmpty').hidden = announcements.length !== 0;
+        list.hidden = announcements.length === 0;
+      } catch (_) {
+        byId('announcementError').textContent =
+          'お知らせを読み込めませんでした。時間をおいて再度お試しください。';
+        byId('announcementError').hidden = false;
+      } finally {
+        byId('announcementLoading').hidden = true;
+      }
+    }
+
     function switchView(viewName) {
       Object.entries(viewIds).forEach(([name, id]) => {
         byId(id).hidden = name !== viewName;
@@ -605,6 +656,7 @@
         else showMenuError('店舗連携完了後にメニューを選択できます。');
       }
       if (viewName === 'history') loadReservationManagement();
+      if (viewName === 'mypage') loadAnnouncements();
       window.scrollTo({ top:0, behavior:'smooth' });
     }
 

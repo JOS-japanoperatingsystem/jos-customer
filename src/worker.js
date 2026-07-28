@@ -158,6 +158,31 @@ async function getProfile(env, identity) {
   return json({ ok: true, exists: Boolean(row), profile: publicProfile(row) });
 }
 
+export async function getCustomerAnnouncements(env, options = {}) {
+  const now = options.now instanceof Date ? options.now : new Date();
+  const nowIso = now.toISOString();
+  const result = await env.jos_customer_db.prepare(
+    `SELECT announcement_id, title, body, published_at, expires_at
+       FROM customer_announcements
+      WHERE is_published = 1
+        AND published_at <= ?
+        AND (expires_at IS NULL OR expires_at > ?)
+      ORDER BY published_at DESC, announcement_id DESC
+      LIMIT 20`
+  ).bind(nowIso, nowIso).all();
+
+  return {
+    ok: true,
+    announcements: (result.results || []).map(row => ({
+      announcementId: String(row.announcement_id || ''),
+      title: String(row.title || ''),
+      body: String(row.body || ''),
+      publishedAt: String(row.published_at || ''),
+      expiresAt: row.expires_at ? String(row.expires_at) : ''
+    }))
+  };
+}
+
 async function saveProfile(env, identity, input) {
   const profile = validateProfile(input);
   const now = new Date().toISOString();
@@ -749,6 +774,9 @@ async function api(request, env, pathname) {
       return json({ ok: true, displayName: identity.displayName, verifiedAt: new Date().toISOString() });
     }
     if (pathname === '/api/profile') return getProfile(env, identity);
+    if (pathname === '/api/announcements') {
+      return json(await getCustomerAnnouncements(env));
+    }
     if (pathname === '/api/profile/save') return saveProfile(env, identity, body.profile || {});
     if (pathname === '/api/profile/update/status') {
       const requestId = normalizeText(body.requestId, 100);
