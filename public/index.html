@@ -158,7 +158,7 @@
 
     <section id="registered" hidden>
       <div id="homeView" class="card">
-        <p class="home-greeting">こんにちは</p>
+        <p id="homeGreeting" class="home-greeting">こんにちは</p>
         <div id="homeName" class="home-name"></div>
         <div id="linkPending" class="waiting">
           <div class="waiting-title">店舗連携の確認待ち</div>
@@ -318,6 +318,19 @@
     function setProgress(message) { byId('progress').textContent = message || ''; }
     function showError(message) { byId('error').textContent = message; byId('error').hidden = false; setProgress(''); }
     function clearError() { byId('error').hidden = true; byId('error').textContent = ''; }
+
+    function getTokyoGreeting(date) {
+      const parts = new Intl.DateTimeFormat('ja-JP', {
+        timeZone:'Asia/Tokyo',
+        hour:'2-digit',
+        hourCycle:'h23'
+      }).formatToParts(date || new Date());
+      const hourPart = parts.find(part => part.type === 'hour');
+      const hour = Number(hourPart ? hourPart.value : 12);
+      if (hour >= 5 && hour < 11) return 'おはようございます';
+      if (hour >= 18 || hour < 5) return 'こんばんは';
+      return 'こんにちは';
+    }
 
     async function callApi(path, extra) {
       const response = await fetch(path, {
@@ -975,6 +988,7 @@
       byId('intro').hidden = true;
       byId('setupCard').hidden = true;
       byId('registrationForm').hidden = true;
+      byId('homeGreeting').textContent = getTokyoGreeting();
       byId('homeName').textContent = profile.lastName + ' ' + profile.firstName + ' 様';
       byId('registeredName').textContent = profile.lastName + ' ' + profile.firstName;
       byId('registeredKana').textContent = profile.lastKana + ' ' + profile.firstKana;
