@@ -93,6 +93,12 @@ function normalizeText(value, maxLength) {
   return String(value || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, maxLength);
 }
 
+function normalizeKana(value, maxLength) {
+  return normalizeText(value, maxLength).replace(/[ぁ-ゖ]/g, character =>
+    String.fromCharCode(character.charCodeAt(0) + 0x60)
+  );
+}
+
 function validateCustomerBookingDate(date) {
   date = normalizeText(date, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -120,9 +126,12 @@ function validateProfile(input) {
   const profile = {
     lastName: normalizeText(input.lastName, 40),
     firstName: normalizeText(input.firstName, 40),
-    lastKana: normalizeText(input.lastKana, 40),
-    firstKana: normalizeText(input.firstKana, 40),
-    phone: String(input.phone || '').replace(/[^0-9]/g, '')
+    lastKana: normalizeKana(input.lastKana, 40),
+    firstKana: normalizeKana(input.firstKana, 40),
+    phone: String(input.phone || '').replace(/[^0-9]/g, ''),
+    registrationType: normalizeText(input.registrationType, 20),
+    customerType: normalizeText(input.customerType, 10),
+    birthday: normalizeText(input.birthday, 10)
   };
 
   if (!profile.lastName || !profile.firstName) throw new Error('姓と名を入力してください。');
@@ -130,6 +139,27 @@ function validateProfile(input) {
   const kana = profile.lastKana + profile.firstKana;
   if (!/^[ァ-ヶー・\s]+$/.test(kana)) throw new Error('フリガナはカタカナで入力してください。');
   if (!/^0\d{9,10}$/.test(profile.phone)) throw new Error('電話番号を正しく入力してください。');
+  if (!['new', 'existing'].includes(profile.registrationType)) {
+    throw new Error('当店のご利用状況を選択してください。');
+  }
+  if (profile.registrationType === 'new' &&
+      !['一般', '学生'].includes(profile.customerType)) {
+    throw new Error('一般または学生を選択してください。');
+  }
+  if (!profile.birthday) {
+    throw new Error('生年月日を選択してください。');
+  }
+  const parsedBirthday = new Date(`${profile.birthday}T00:00:00Z`);
+  const tokyoToday = new Date(Date.now() + 9 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(profile.birthday) ||
+      isNaN(parsedBirthday.getTime()) ||
+      parsedBirthday.toISOString().slice(0, 10) !== profile.birthday ||
+      profile.birthday < '1900-01-01' ||
+      profile.birthday > tokyoToday) {
+    throw new Error('生年月日を正しく選択してください。');
+  }
   return profile;
 }
 
@@ -141,7 +171,10 @@ function publicProfile(row) {
     lastKana: row.last_kana,
     firstKana: row.first_kana,
     phone: row.phone,
-    linkStatus: row.link_status
+    linkStatus: row.link_status,
+    registrationType: row.registration_type || 'existing',
+    customerType: row.customer_type || '',
+    birthday: row.birthday || ''
   };
 }
 
@@ -161,7 +194,8 @@ function publicReservation(row) {
 async function getProfile(env, identity) {
   const row = await env.jos_customer_db.prepare(
     `SELECT last_name, first_name, last_kana, first_kana, phone,
-            link_status, jos_customer_id
+            link_status, jos_customer_id, registration_type,
+            customer_type, birthday
        FROM customer_profiles
       WHERE line_sub = ?`
   ).bind(identity.sub).first();
@@ -410,8 +444,9 @@ async function saveProfile(env, identity, input) {
   await env.jos_customer_db.prepare(
     `INSERT INTO customer_profiles
        (line_sub, line_display_name, last_name, first_name, last_kana,
-        first_kana, phone, link_status, approval_key, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+        first_kana, phone, registration_type, customer_type, birthday,
+        link_status, approval_key, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
      ON CONFLICT(line_sub) DO UPDATE SET
        line_display_name = excluded.line_display_name,
        last_name = excluded.last_name,
@@ -419,6 +454,9 @@ async function saveProfile(env, identity, input) {
        last_kana = excluded.last_kana,
        first_kana = excluded.first_kana,
        phone = excluded.phone,
+       registration_type = excluded.registration_type,
+       customer_type = excluded.customer_type,
+       birthday = excluded.birthday,
        updated_at = excluded.updated_at`
   ).bind(
     identity.sub,
@@ -428,6 +466,9 @@ async function saveProfile(env, identity, input) {
     profile.lastKana,
     profile.firstKana,
     profile.phone,
+    profile.registrationType,
+    profile.customerType,
+    profile.birthday,
     approvalKey,
     now,
     now
@@ -681,7 +722,8 @@ async function adminApi(request, env, pathname) {
     if (pathname === '/api/admin/pending') {
       const result = await env.jos_customer_db.prepare(
         `SELECT approval_key, line_display_name, last_name, first_name,
-                last_kana, first_kana, phone, created_at, updated_at
+                last_kana, first_kana, phone, registration_type,
+                customer_type, birthday, created_at, updated_at
            FROM customer_profiles
           WHERE link_status = 'pending'
           ORDER BY created_at ASC
@@ -698,6 +740,9 @@ async function adminApi(request, env, pathname) {
           lastKana: row.last_kana,
           firstKana: row.first_kana,
           phone: row.phone,
+          registrationType: row.registration_type || 'existing',
+          customerType: row.customer_type || '',
+          birthday: row.birthday || '',
           createdAt: row.created_at,
           updatedAt: row.updated_at
         }))

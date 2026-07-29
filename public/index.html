@@ -33,9 +33,19 @@
     .form-title { margin:0 0 5px; font-size:20px; font-weight:900; }
     .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:16px; }
     label { display:block; color:#344054; font-size:13px; font-weight:800; }
-    input { width:100%; height:52px; margin-top:7px; padding:0 13px; border:1px solid #d0d5dd; border-radius:12px; background:#fff; color:var(--ink); font:inherit; font-size:16px; }
-    input:focus { outline:3px solid rgba(37,99,235,.16); border-color:var(--blue); }
+    input,select { width:100%; height:52px; margin-top:7px; padding:0 13px; border:1px solid #d0d5dd; border-radius:12px; background:#fff; color:var(--ink); font:inherit; font-size:16px; }
+    input:focus,select:focus { outline:3px solid rgba(37,99,235,.16); border-color:var(--blue); }
     .full { grid-column:1/-1; }
+    .required-mark { margin-left:6px; color:var(--red); font-size:12px; font-weight:900; }
+    .birthday-selects { display:grid; grid-template-columns:1.35fr 1fr 1fr; gap:8px; }
+    .birthday-selects select { padding:0 8px; text-align:center; }
+    .form-hint { margin-top:7px; color:var(--muted); font-size:12px; font-weight:700; line-height:1.55; }
+    .choice-label { color:#344054; font-size:13px; font-weight:800; }
+    .choice-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-top:8px; }
+    .choice-option { position:relative; display:block; }
+    .choice-option input { position:absolute; opacity:0; pointer-events:none; width:1px; height:1px; margin:0; }
+    .choice-option span { min-height:52px; display:grid; place-items:center; padding:10px; border:1.5px solid #d0d5dd; border-radius:12px; background:#fff; color:#344054; font-size:14px; font-weight:900; text-align:center; }
+    .choice-option input:checked + span { border-color:var(--blue); background:#eff6ff; color:var(--blue); box-shadow:0 0 0 1px var(--blue); }
     .waiting { margin-top:20px; padding:18px; border-radius:15px; background:#fff7e8; color:#9a4b00; }
     .waiting-title { font-size:18px; font-weight:900; }
     .waiting p { margin:7px 0 0; color:#7a4a17; line-height:1.65; }
@@ -142,13 +152,42 @@
 
       <form id="registrationForm" class="form" hidden>
         <div class="form-title">お客様情報を登録</div>
-        <p class="note">店舗の顧客情報と確認するため、正確にご入力ください。</p>
+        <p class="note">初めてのお客様は自動登録されます。ご利用歴がある場合のみ店舗で確認します。</p>
         <div class="grid">
+          <div id="registrationTypeField" class="full">
+            <div class="choice-label">当店のご利用</div>
+            <div class="choice-grid">
+              <label class="choice-option"><input type="radio" name="registrationType" value="new" required><span>初めて利用する</span></label>
+              <label class="choice-option"><input type="radio" name="registrationType" value="existing" required><span>利用したことがある</span></label>
+            </div>
+          </div>
           <label>姓<input id="lastName" maxlength="40" autocomplete="family-name" required></label>
           <label>名<input id="firstName" maxlength="40" autocomplete="given-name" required></label>
           <label>セイ<input id="lastKana" maxlength="40" inputmode="kana" required></label>
           <label>メイ<input id="firstKana" maxlength="40" inputmode="kana" required></label>
           <label class="full">電話番号<input id="phone" type="tel" maxlength="14" inputmode="tel" autocomplete="tel" placeholder="09012345678" required></label>
+          <div id="customerTypeField" class="full" hidden>
+            <div class="choice-label">料金区分</div>
+            <div class="choice-grid">
+              <label class="choice-option"><input type="radio" name="customerType" value="一般"><span>一般</span></label>
+              <label class="choice-option"><input type="radio" name="customerType" value="学生"><span>学生</span></label>
+            </div>
+          </div>
+          <label id="birthdayField" class="full">
+            <span>生年月日<span class="required-mark">必須</span></span>
+            <span class="birthday-selects">
+              <select id="birthYear" aria-label="生まれた年" required>
+                <option value="">年</option>
+              </select>
+              <select id="birthMonth" aria-label="生まれた月" required>
+                <option value="">月</option>
+              </select>
+              <select id="birthDay" aria-label="生まれた日" required>
+                <option value="">日</option>
+              </select>
+            </span>
+            <span class="form-hint">年・月・日をそれぞれタップして選択してください。</span>
+          </label>
         </div>
         <button id="saveButton" class="primary" type="submit">この内容で登録</button>
         <button id="cancelEditButton" class="secondary" type="button" hidden>変更をやめる</button>
@@ -161,8 +200,8 @@
         <p id="homeGreeting" class="home-greeting">こんにちは</p>
         <div id="homeName" class="home-name"></div>
         <div id="linkPending" class="waiting">
-          <div class="waiting-title">店舗連携の確認待ち</div>
-          <p>登録を受け付けました。既存のお客様情報との連携は、店舗が確認してから有効になります。</p>
+          <div id="linkPendingTitle" class="waiting-title">店舗連携の確認待ち</div>
+          <p id="linkPendingMessage">登録を受け付けました。既存のお客様情報との連携は、店舗が確認してから有効になります。</p>
         </div>
         <div id="nextReservation" class="next-reservation" hidden>
           <div class="next-title">次回予約</div>
@@ -264,6 +303,7 @@
           <div class="detail"><span class="detail-label">お名前</span><span id="registeredName" class="detail-value"></span></div>
           <div class="detail"><span class="detail-label">フリガナ</span><span id="registeredKana" class="detail-value"></span></div>
           <div class="detail"><span class="detail-label">電話番号</span><span id="registeredPhone" class="detail-value"></span></div>
+          <div class="detail"><span class="detail-label">生年月日</span><span id="registeredBirthday" class="detail-value"></span></div>
           </div>
         </div>
         <button id="editButton" class="secondary" type="button">登録内容を変更</button>
@@ -345,18 +385,98 @@
     }
 
     function formProfile() {
+      const registrationType = document.querySelector('input[name="registrationType"]:checked');
+      const customerType = document.querySelector('input[name="customerType"]:checked');
       return {
         lastName:byId('lastName').value,
         firstName:byId('firstName').value,
         lastKana:byId('lastKana').value,
         firstKana:byId('firstKana').value,
-        phone:byId('phone').value
+        phone:byId('phone').value,
+        registrationType:registrationType ? registrationType.value : '',
+        customerType:customerType ? customerType.value : '',
+        birthday:getBirthdayValue()
       };
+    }
+
+    function getBirthdayValue() {
+      const year = byId('birthYear').value;
+      const month = byId('birthMonth').value;
+      const day = byId('birthDay').value;
+      return year && month && day ? year + '-' + month + '-' + day : '';
+    }
+
+    function updateBirthDayOptions(preferredDay) {
+      const daySelect = byId('birthDay');
+      const currentDay = String(preferredDay || daySelect.value || '');
+      const year = Number(byId('birthYear').value);
+      const month = Number(byId('birthMonth').value);
+      const maxDay = year && month ? new Date(year, month, 0).getDate() : 31;
+      daySelect.innerHTML = '<option value="">日</option>';
+      for (let day = 1; day <= maxDay; day += 1) {
+        const value = String(day).padStart(2, '0');
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = day + '日';
+        daySelect.appendChild(option);
+      }
+      daySelect.value = Number(currentDay) <= maxDay ? currentDay.padStart(2, '0') : '';
+    }
+
+    function initializeBirthdaySelectors() {
+      const today = new Date();
+      const yearSelect = byId('birthYear');
+      for (let year = today.getFullYear(); year >= 1900; year -= 1) {
+        const option = document.createElement('option');
+        option.value = String(year);
+        option.textContent = year + '年';
+        yearSelect.appendChild(option);
+      }
+      const monthSelect = byId('birthMonth');
+      for (let month = 1; month <= 12; month += 1) {
+        const value = String(month).padStart(2, '0');
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = month + '月';
+        monthSelect.appendChild(option);
+      }
+      updateBirthDayOptions('');
+    }
+
+    function setBirthdayValue(value) {
+      const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      byId('birthYear').value = match ? match[1] : '';
+      byId('birthMonth').value = match ? match[2] : '';
+      updateBirthDayOptions(match ? match[3] : '');
     }
 
     function fillForm(profile) {
       const p = profile || {};
       ['lastName','firstName','lastKana','firstKana','phone'].forEach(key => { byId(key).value = p[key] || ''; });
+      setBirthdayValue(p.birthday || '');
+      document.querySelectorAll('input[name="registrationType"]').forEach(input => {
+        input.checked = input.value === (p.registrationType || '');
+      });
+      document.querySelectorAll('input[name="customerType"]').forEach(input => {
+        input.checked = input.value === (p.customerType || '');
+      });
+    }
+
+    function updateRegistrationFields(editing) {
+      const selected = document.querySelector('input[name="registrationType"]:checked');
+      const isNew = !editing && selected && selected.value === 'new';
+      byId('registrationTypeField').hidden = Boolean(editing);
+      byId('customerTypeField').hidden = !isNew;
+      byId('birthdayField').hidden = false;
+      document.querySelectorAll('input[name="registrationType"]').forEach(input => {
+        input.required = !editing;
+      });
+      document.querySelectorAll('input[name="customerType"]').forEach(input => {
+        input.required = Boolean(isNew);
+      });
+      ['birthYear','birthMonth','birthDay'].forEach(id => {
+        byId(id).required = true;
+      });
     }
 
     const viewIds = {
@@ -684,6 +804,10 @@
 
     function showForm(profile, editing) {
       fillForm(profile);
+      const approvedEditing = Boolean(
+        editing && profile && profile.linkStatus === 'approved'
+      );
+      updateRegistrationFields(approvedEditing);
       document.body.classList.remove('app-ready');
       byId('intro').hidden = !!editing;
       byId('setupCard').hidden = false;
@@ -993,7 +1117,17 @@
       byId('registeredName').textContent = profile.lastName + ' ' + profile.firstName;
       byId('registeredKana').textContent = profile.lastKana + ' ' + profile.firstKana;
       byId('registeredPhone').textContent = profile.phone;
+      byId('registeredBirthday').textContent = profile.birthday
+        ? profile.birthday.replace(/-/g, '/')
+        : '未登録';
       const approved = profile.linkStatus === 'approved';
+      const newRegistration = profile.registrationType === 'new';
+      byId('linkPendingTitle').textContent = newRegistration
+        ? '新規登録を確認しています'
+        : '店舗連携の確認待ち';
+      byId('linkPendingMessage').textContent = newRegistration
+        ? '初めてのお客様として登録しています。通常は1分ほどで予約をご利用いただけます。'
+        : '登録を受け付けました。既存のお客様情報との連携は、店舗が確認してから有効になります。';
       byId('linkPending').hidden = approved;
       byId('mypageLinkState').textContent = approved ? '連携済み' : '確認待ち';
       byId('mypageLinkState').style.color = approved ? 'var(--green)' : '#9a4b00';
@@ -1062,6 +1196,9 @@
       }
     }
 
+    initializeBirthdaySelectors();
+    byId('birthYear').addEventListener('change', () => updateBirthDayOptions());
+    byId('birthMonth').addEventListener('change', () => updateBirthDayOptions());
     byId('registrationForm').addEventListener('submit', async event => {
       event.preventDefault(); clearError();
       const button = byId('saveButton'); button.disabled = true; setProgress('安全に登録しています…');
@@ -1082,6 +1219,18 @@
       finally {
         if (!pendingUpdate) button.disabled = false;
       }
+    });
+    function convertKanaInput(input) {
+      input.value = String(input.value || '').replace(/[ぁ-ゖ]/g, character =>
+        String.fromCharCode(character.charCodeAt(0) + 0x60)
+      );
+    }
+    ['lastKana','firstKana'].forEach(id => {
+      byId(id).addEventListener('input', event => convertKanaInput(event.target));
+      byId(id).addEventListener('blur', event => convertKanaInput(event.target));
+    });
+    document.querySelectorAll('input[name="registrationType"]').forEach(input => {
+      input.addEventListener('change', () => updateRegistrationFields(false));
     });
     byId('editButton').addEventListener('click', () => showForm(currentProfile, true));
     byId('cancelEditButton').addEventListener('click', () => showRegistered(currentProfile));
