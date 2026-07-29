@@ -1,16 +1,24 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
+  deleteCustomerAnnouncement,
   listCustomerAnnouncementsForAdmin,
-  saveCustomerAnnouncement
+  saveCustomerAnnouncement,
+  setCustomerAnnouncementPublished
 } from '../src/worker.js';
 
 let savedBinding = [];
 let uploaded = null;
+let deletedImageKey = '';
+let updateBinding = [];
+let deleteBinding = [];
 const env = {
   ANNOUNCEMENT_IMAGES: {
     async put(key, bytes, options) {
       uploaded = { key, bytes: [...bytes], options };
+    },
+    async delete(key) {
+      deletedImageKey = key;
     }
   },
   jos_customer_db: {
@@ -23,6 +31,39 @@ const env = {
           },
           async run() {
             return { success: true };
+          }
+        };
+      }
+      if (/UPDATE customer_announcements/.test(sql)) {
+        return {
+          bind(...values) {
+            updateBinding = values;
+            return this;
+          },
+          async run() {
+            return { meta: { changes: 1 } };
+          }
+        };
+      }
+      if (/SELECT image_key/.test(sql)) {
+        return {
+          bind(...values) {
+            deleteBinding = values;
+            return this;
+          },
+          async first() {
+            return { image_key: 'notice-image/example.png' };
+          }
+        };
+      }
+      if (/DELETE FROM customer_announcements/.test(sql)) {
+        return {
+          bind(...values) {
+            deleteBinding = values;
+            return this;
+          },
+          async run() {
+            return { meta: { changes: 1 } };
           }
         };
       }
@@ -75,6 +116,25 @@ await assert.rejects(
 const list = await listCustomerAnnouncementsForAdmin(env);
 assert.equal(list.announcements[0].imageUrl,
   '/api/announcement-image/notice-image%2Fexample.png');
+
+const stopped = await setCustomerAnnouncementPublished(env, {
+  announcementId: 'notice-image',
+  isPublished: false
+}, { now: new Date('2026-07-28T12:00:00.000Z') });
+assert.equal(stopped.isPublished, false);
+assert.deepEqual(updateBinding, [
+  0,
+  '2026-07-28T12:00:00.000Z',
+  'notice-image'
+]);
+
+const deleted = await deleteCustomerAnnouncement(env, {
+  announcementId: 'notice-image'
+});
+assert.equal(deleted.ok, true);
+assert.equal(deleted.imageDeleted, true);
+assert.deepEqual(deleteBinding, ['notice-image']);
+assert.equal(deletedImageKey, 'notice-image/example.png');
 
 const html = await readFile(new URL('../public/index.html', import.meta.url), 'utf8');
 assert.match(html, /if \(item\.imageUrl\)/);

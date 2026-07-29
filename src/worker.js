@@ -296,6 +296,54 @@ export async function listCustomerAnnouncementsForAdmin(env) {
   };
 }
 
+export async function setCustomerAnnouncementPublished(env, input, options = {}) {
+  input = input && typeof input === 'object' ? input : {};
+  const announcementId = normalizeText(input.announcementId, 100);
+  if (!announcementId) throw new Error('お知らせIDが正しくありません。');
+  const isPublished = input.isPublished === true ? 1 : 0;
+  const now = options.now instanceof Date ? options.now : new Date();
+  const result = await env.jos_customer_db.prepare(
+    `UPDATE customer_announcements
+        SET is_published = ?, updated_at = ?
+      WHERE announcement_id = ?`
+  ).bind(isPublished, now.toISOString(), announcementId).run();
+  if (!result.meta || Number(result.meta.changes) !== 1) {
+    throw new Error('対象のお知らせが見つかりません。');
+  }
+  return {
+    ok: true,
+    announcementId,
+    isPublished: isPublished === 1
+  };
+}
+
+export async function deleteCustomerAnnouncement(env, input) {
+  input = input && typeof input === 'object' ? input : {};
+  const announcementId = normalizeText(input.announcementId, 100);
+  if (!announcementId) throw new Error('お知らせIDが正しくありません。');
+  const row = await env.jos_customer_db.prepare(
+    `SELECT image_key
+       FROM customer_announcements
+      WHERE announcement_id = ?`
+  ).bind(announcementId).first();
+  if (!row) throw new Error('対象のお知らせが見つかりません。');
+
+  const result = await env.jos_customer_db.prepare(
+    `DELETE FROM customer_announcements
+      WHERE announcement_id = ?`
+  ).bind(announcementId).run();
+  if (!result.meta || Number(result.meta.changes) !== 1) {
+    throw new Error('お知らせを削除できませんでした。');
+  }
+  const imageKey = String(row.image_key || '');
+  if (imageKey) await env.ANNOUNCEMENT_IMAGES.delete(imageKey);
+  return {
+    ok: true,
+    announcementId,
+    imageDeleted: Boolean(imageKey)
+  };
+}
+
 async function getAnnouncementImage(request, env, pathname) {
   if (request.method !== 'GET') {
     return json({ ok: false, message: 'GETのみ利用できます。' }, 405);
@@ -406,6 +454,16 @@ async function adminApi(request, env, pathname) {
     if (pathname === '/api/admin/announcements/save') {
       const body = await readAnnouncementJson(request);
       return json(await saveCustomerAnnouncement(env, body));
+    }
+
+    if (pathname === '/api/admin/announcements/publish-status') {
+      const body = await readJson(request);
+      return json(await setCustomerAnnouncementPublished(env, body));
+    }
+
+    if (pathname === '/api/admin/announcements/delete') {
+      const body = await readJson(request);
+      return json(await deleteCustomerAnnouncement(env, body));
     }
 
     if (pathname === '/api/admin/pc-sync/start') {
