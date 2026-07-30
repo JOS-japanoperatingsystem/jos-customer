@@ -93,6 +93,180 @@ function normalizeText(value, maxLength) {
   return String(value || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, maxLength);
 }
 
+async function issueLineMessagingToken(env) {
+  const channelId = normalizeText(env.LINE_MESSAGING_CHANNEL_ID, 40);
+  const channelSecret = normalizeText(env.LINE_MESSAGING_CHANNEL_SECRET, 200);
+  if (!channelId || !channelSecret) {
+    throw new Error('LINE予約通知の秘密設定が未完了です。');
+  }
+  const form = new URLSearchParams({
+    grant_type: 'client_credentials',
+    client_id: channelId,
+    client_secret: channelSecret
+  });
+  const response = await fetch('https://api.line.me/oauth2/v3/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: form
+  });
+  const data = await response.json();
+  if (!response.ok || !data.access_token) {
+    throw new Error('LINE予約通知の送信認証に失敗しました。');
+  }
+  return String(data.access_token);
+}
+
+async function pushLineText(env, lineSub, text) {
+  const token = await issueLineMessagingToken(env);
+  const response = await fetch('https://api.line.me/v2/bot/message/push', {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      to: normalizeText(lineSub, 100),
+      messages: [{ type: 'text', text: normalizeText(text, 4500) }]
+    })
+  });
+  if (!response.ok) {
+    const detail = normalizeText(await response.text(), 300);
+    throw new Error(`LINE予約通知を送信できませんでした（${response.status}）${detail ? `：${detail}` : '。'}`);
+  }
+}
+
+async function verifyLineWebhookSignature(request, channelSecret, rawBody) {
+  const signature = String(request.headers.get('x-line-signature') || '');
+  if (!signature || !channelSecret) return false;
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(channelSecret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['verify']
+  );
+  let signatureBytes;
+  try {
+    signatureBytes = Uint8Array.from(atob(signature), character => character.charCodeAt(0));
+  } catch (_) {
+    return false;
+  }
+  return crypto.subtle.verify(
+    'HMAC',
+    key,
+    signatureBytes,
+    new TextEncoder().encode(rawBody)
+  );
+}
+
+async function getLineMessagingProfile(env, token, lineUserId) {
+  const response = await fetch(
+    `https://api.line.me/v2/bot/profile/${encodeURIComponent(lineUserId)}`,
+    { headers: { authorization: `Bearer ${token}` } }
+  );
+  if (!response.ok) return { displayName: 'LINE通知先' };
+  const profile = await response.json();
+  return { displayName: normalizeText(profile.displayName, 100) || 'LINE通知先' };
+}
+
+async function replyLineText(token, replyToken, text) {
+  if (!replyToken) return;
+  await fetch('https://api.line.me/v2/bot/message/reply', {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      replyToken,
+      messages: [{ type: 'text', text: normalizeText(text, 4500) }]
+    })
+  });
+}
+
+async function lineWebhook(request, env) {
+  if (request.method !== 'POST') return new Response('OK');
+  const rawBody = await request.text();
+  const channelSecret = normalizeText(env.LINE_MESSAGING_CHANNEL_SECRET, 200);
+  if (!await verifyLineWebhookSignature(request, channelSecret, rawBody)) {
+    return new Response('Invalid signature', { status: 401 });
+  }
+  let payload;
+  try {
+    payload = JSON.parse(rawBody);
+  } catch (_) {
+    return new Response('Invalid JSON', { status: 400 });
+  }
+  const registrationEvents = (Array.isArray(payload.events) ? payload.events : [])
+    .filter(event =>
+      event &&
+      event.type === 'message' &&
+      event.message &&
+      event.message.type === 'text' &&
+      normalizeText(event.message.text, 100) === 'JOS通知登録' &&
+      event.source &&
+      event.source.type === 'user' &&
+      event.source.userId
+    );
+  if (!registrationEvents.length) return new Response('OK');
+
+  const token = await issueLineMessagingToken(env);
+  for (const event of registrationEvents) {
+    const lineUserId = normalizeText(event.source.userId, 100);
+    const profile = await getLineMessagingProfile(env, token, lineUserId);
+    const now = new Date().toISOString();
+    await env.jos_customer_db.prepare(
+      `INSERT INTO line_notification_recipients
+         (line_user_id, display_name, registered_at, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(line_user_id) DO UPDATE SET
+         display_name = excluded.display_name,
+         updated_at = excluded.updated_at`
+    ).bind(lineUserId, profile.displayName, now, now).run();
+    await replyLineText(
+      token,
+      event.replyToken,
+      'JOSの予約通知先として登録を受け付けました。\nPC管理画面で通知先を選択してください。'
+    );
+  }
+  return new Response('OK');
+}
+
+async function notifyStoreOfBooking(env, booking) {
+  const setting = await env.jos_customer_db.prepare(
+    `SELECT recipient_line_sub FROM line_notification_settings WHERE setting_id = 1`
+  ).first();
+  if (!setting || !setting.recipient_line_sub) return { sent: false, reason: 'not-configured' };
+  const price = Number(booking.price || 0).toLocaleString('ja-JP');
+  const message = [
+    '【新しい予約が入りました】',
+    '',
+    `${booking.date} ${booking.startTime}〜${booking.endTime}`,
+    `${booking.customerName} 様`,
+    booking.menuNames,
+    `予定料金：${price}円`,
+    '',
+    `受付ID：${booking.requestId}`
+  ].join('\n');
+  const now = new Date().toISOString();
+  try {
+    await pushLineText(env, setting.recipient_line_sub, message);
+    await env.jos_customer_db.prepare(
+      `UPDATE line_notification_settings
+          SET last_sent_at = ?, last_error = '', updated_at = ?
+        WHERE setting_id = 1`
+    ).bind(now, now).run();
+    return { sent: true };
+  } catch (error) {
+    await env.jos_customer_db.prepare(
+      `UPDATE line_notification_settings
+          SET last_error = ?, updated_at = ?
+        WHERE setting_id = 1`
+    ).bind(normalizeText(error && error.message, 500), now).run();
+    return { sent: false, reason: 'send-failed' };
+  }
+}
+
 function normalizeKana(value, maxLength) {
   return normalizeText(value, maxLength).replace(/[ぁ-ゖ]/g, character =>
     String.fromCharCode(character.charCodeAt(0) + 0x60)
@@ -488,6 +662,90 @@ async function adminApi(request, env, pathname) {
   if (!adminAuthorized(request, env)) return json({ ok: false, message: '管理認証に失敗しました。' }, 401);
 
   try {
+    if (pathname === '/api/admin/line-notifications/status') {
+      const setting = await env.jos_customer_db.prepare(
+        `SELECT recipient_line_sub, recipient_display_name, last_sent_at,
+                last_error, updated_at
+           FROM line_notification_settings WHERE setting_id = 1`
+      ).first();
+      const candidates = await env.jos_customer_db.prepare(
+        `SELECT line_user_id, display_name
+           FROM line_notification_recipients
+          ORDER BY display_name ASC, registered_at ASC
+          LIMIT 1000`
+      ).all();
+      return json({
+        ok: true,
+        configured: Boolean(setting && setting.recipient_line_sub),
+        recipientDisplayName: setting && setting.recipient_display_name || '',
+        lastSentAt: setting && setting.last_sent_at || '',
+        lastError: setting && setting.last_error || '',
+        updatedAt: setting && setting.updated_at || '',
+        candidates: (candidates.results || []).map(row => ({
+          lineSub: row.line_user_id,
+          lineDisplayName: row.display_name || '',
+          customerName: ''
+        }))
+      });
+    }
+
+    if (pathname === '/api/admin/line-notifications/recipient') {
+      const body = await readJson(request);
+      const lineSub = normalizeText(body.lineSub, 100);
+      if (!lineSub) throw new Error('通知先LINEを選択してください。');
+      const profile = await env.jos_customer_db.prepare(
+        `SELECT display_name FROM line_notification_recipients
+          WHERE line_user_id = ?`
+      ).bind(lineSub).first();
+      if (!profile) throw new Error('公式LINEで登録した通知先を確認できませんでした。');
+      const now = new Date().toISOString();
+      await env.jos_customer_db.prepare(
+        `INSERT INTO line_notification_settings
+           (setting_id, recipient_line_sub, recipient_display_name, updated_at)
+         VALUES (1, ?, ?, ?)
+         ON CONFLICT(setting_id) DO UPDATE SET
+           recipient_line_sub = excluded.recipient_line_sub,
+           recipient_display_name = excluded.recipient_display_name,
+           last_error = '',
+           updated_at = excluded.updated_at`
+      ).bind(lineSub, profile.display_name || '', now).run();
+      return json({ ok: true, recipientDisplayName: profile.display_name || '' });
+    }
+
+    if (pathname === '/api/admin/line-notifications/test') {
+      const setting = await env.jos_customer_db.prepare(
+        `SELECT recipient_line_sub FROM line_notification_settings WHERE setting_id = 1`
+      ).first();
+      if (!setting || !setting.recipient_line_sub) throw new Error('通知先LINEが未設定です。');
+      await pushLineText(env, setting.recipient_line_sub,
+        '【JOS通知テスト】\n予約通知の受信設定が完了しました。');
+      return json({ ok: true });
+    }
+
+    if (pathname === '/api/admin/bookings/recent') {
+      const result = await env.jos_customer_db.prepare(
+        `SELECT request_id, customer_name, menu_names, reservation_date,
+                start_time, end_time, status, final_price, created_at
+           FROM customer_booking_requests
+          ORDER BY created_at DESC
+          LIMIT 20`
+      ).all();
+      return json({
+        ok: true,
+        requests: (result.results || []).map(row => ({
+          requestId: row.request_id,
+          customerName: row.customer_name || '',
+          menuNames: row.menu_names || '',
+          date: row.reservation_date || '',
+          startTime: row.start_time || '',
+          endTime: row.end_time || '',
+          status: row.status || '',
+          finalPrice: row.final_price === null ? null : Number(row.final_price),
+          createdAt: row.created_at || ''
+        }))
+      });
+    }
+
     if (pathname === '/api/admin/announcements/list') {
       return json(await listCustomerAnnouncementsForAdmin(env));
     }
@@ -1161,7 +1419,7 @@ async function api(request, env, pathname) {
 
     if (pathname === '/api/booking/request') {
       const profile = await env.jos_customer_db.prepare(
-        `SELECT jos_customer_id, last_name, first_name
+        `SELECT jos_customer_id, last_name, first_name, customer_type
            FROM customer_profiles
           WHERE line_sub = ? AND link_status = 'approved'`
       ).bind(identity.sub).first();
@@ -1263,6 +1521,15 @@ async function api(request, env, pathname) {
       if (!insert.meta || Number(insert.meta.changes || 0) !== 1) {
         return json({ ok: false, message: '選択中に予約が入りました。別の時間を選択してください。' }, 409);
       }
+      await notifyStoreOfBooking(env, {
+        requestId,
+        customerName,
+        menuNames: menus.map(menu => menu.menu_name).join('、'),
+        date,
+        startTime,
+        endTime,
+        price: profile.customer_type === '学生' ? studentTotal : normalTotal
+      });
       return json({ ok: true, requestId, status: 'pending' });
     }
 
@@ -1503,6 +1770,7 @@ async function api(request, env, pathname) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.pathname === '/webhook/line') return lineWebhook(request, env);
     if (url.pathname.startsWith('/api/announcement-image/')) {
       return getAnnouncementImage(request, env, url.pathname);
     }
