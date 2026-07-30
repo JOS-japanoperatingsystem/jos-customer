@@ -174,7 +174,7 @@
             </div>
           </div>
           <label id="birthdayField" class="full">
-            <span>生年月日<span class="required-mark">必須</span></span>
+            <span>生年月日</span>
             <span class="birthday-selects">
               <select id="birthYear" aria-label="生まれた年" required>
                 <option value="">年</option>
@@ -227,6 +227,7 @@
           <div class="summary-row"><span class="summary-label">合計予約枠時間</span><span id="selectedMenuTime" class="summary-value">0分</span></div>
           <div class="summary-row total"><span class="summary-label">通常料金 合計</span><span id="selectedNormalTotal" class="summary-value">0円</span></div>
           <div class="summary-row"><span class="summary-label">学生料金 合計</span><span id="selectedStudentTotal" class="summary-value">0円</span></div>
+          <div id="firstVisitTimeNote" class="summary-note" hidden>初回カウンセリング15分を含みます。</div>
           <div class="summary-note">学生料金の適用は、店舗で登録されている学生区分をもとに予約確定時に判定します。</div>
         </div>
         <button id="bookingNextButton" class="primary" type="button" disabled>日時を選択する</button>
@@ -501,13 +502,17 @@
 
     function renderMenuSummary() {
       const selected = currentMenus.filter(menu => selectedMenuIds.has(menu.menuId));
-      const totalTime = selected.reduce((sum, menu) => sum + Number(menu.treatmentTime || 0), 0);
+      const menuTime = selected.reduce((sum, menu) => sum + Number(menu.treatmentTime || 0), 0);
+      const firstVisitMinutes = currentProfile &&
+        currentProfile.needsInitialCounseling === true && selected.length ? 15 : 0;
+      const totalTime = menuTime + firstVisitMinutes;
       const normalTotal = selected.reduce((sum, menu) => sum + Number(menu.normalPrice || 0), 0);
       const studentTotal = selected.reduce((sum, menu) => sum + Number(menu.studentPrice || menu.normalPrice || 0), 0);
       byId('selectedMenuCount').textContent = selected.length + '件';
       byId('selectedMenuTime').textContent = totalTime + '分';
       byId('selectedNormalTotal').textContent = formatYen(normalTotal);
       byId('selectedStudentTotal').textContent = formatYen(studentTotal);
+      byId('firstVisitTimeNote').hidden = firstVisitMinutes === 0;
       byId('menuSummary').hidden = selected.length === 0;
       byId('bookingNextButton').disabled = selected.length === 0;
       if (!selected.length) {
@@ -519,9 +524,12 @@
     }
 
     function selectedTreatmentMinutes() {
-      return currentMenus
+      const menuMinutes = currentMenus
         .filter(menu => selectedMenuIds.has(menu.menuId))
         .reduce((sum, menu) => sum + Number(menu.treatmentTime || 0), 0);
+      const firstVisitMinutes = currentProfile &&
+        currentProfile.needsInitialCounseling === true && selectedMenuIds.size ? 15 : 0;
+      return menuMinutes + firstVisitMinutes;
     }
 
     function tokyoDate(offsetDays) {
@@ -547,7 +555,7 @@
       try {
         const result = await callApi('/api/availability', {
           date,
-          treatmentMinutes:minutes
+          menuIds:[...selectedMenuIds]
         });
         const slots = Array.isArray(result.slots) ? result.slots : [];
         if (!slots.length) {
@@ -1226,7 +1234,7 @@
       );
     }
     ['lastKana','firstKana'].forEach(id => {
-      byId(id).addEventListener('input', event => convertKanaInput(event.target));
+      byId(id).addEventListener('compositionend', event => convertKanaInput(event.target));
       byId(id).addEventListener('blur', event => convertKanaInput(event.target));
     });
     document.querySelectorAll('input[name="registrationType"]').forEach(input => {

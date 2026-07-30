@@ -25,10 +25,15 @@ test('customer selects new or existing before registration', () => {
     page,
     /editing && profile && profile\.linkStatus === 'approved'/
   );
+  assert.match(page, /初回カウンセリング15分を含みます/);
+  assert.match(page, /currentProfile\.needsInitialCounseling === true/);
+  assert.match(page, /menuIds:\[\.\.\.selectedMenuIds\]/);
 });
 
 test('hiragana furigana is converted to katakana on client and server', () => {
   assert.match(page, /replace\(\/\[ぁ-ゖ\]\/g/);
+  assert.match(page, /addEventListener\('compositionend'/);
+  assert.doesNotMatch(page, /addEventListener\('input', event => convertKanaInput/);
   assert.match(worker, /function normalizeKana/);
   assert.match(worker, /lastKana: normalizeKana/);
   assert.match(worker, /firstKana: normalizeKana/);
@@ -40,4 +45,6 @@ test('registration metadata is persisted for guarded automatic creation', () => 
   assert.match(migration, /ADD COLUMN birthday/);
   assert.match(worker, /registration_type, customer_type, birthday/);
   assert.match(worker, /registrationType: row\.registration_type/);
+  assert.match(worker, /needsInitialCounseling/);
+  assert.match(worker, /status IN \('pending', 'confirmed'\)/);
 });

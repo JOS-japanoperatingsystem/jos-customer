@@ -267,6 +267,50 @@ async function notifyStoreOfBooking(env, booking) {
   }
 }
 
+async function notifyStoreOfReservationAction(env, action) {
+  const setting = await env.jos_customer_db.prepare(
+    `SELECT recipient_line_sub FROM line_notification_settings WHERE setting_id = 1`
+  ).first();
+  if (!setting || !setting.recipient_line_sub) return { sent: false, reason: 'not-configured' };
+  const message = action.actionType === 'change'
+    ? [
+        '【予約変更が入りました】',
+        '',
+        `${action.customerName} 様`,
+        `変更前：${action.originalDate} ${action.originalStartTime}〜${action.originalEndTime}`,
+        `変更後：${action.requestedDate} ${action.requestedStartTime}〜${action.requestedEndTime}`,
+        action.menuName,
+        '',
+        'TimeTreeの変更をお願いします。'
+      ].join('\n')
+    : [
+        `【${action.cancelStatus}が入りました】`,
+        '',
+        `${action.customerName} 様`,
+        `${action.originalDate} ${action.originalStartTime}〜${action.originalEndTime}`,
+        action.menuName,
+        '',
+        'TimeTreeの変更をお願いします。'
+      ].join('\n');
+  const now = new Date().toISOString();
+  try {
+    await pushLineText(env, setting.recipient_line_sub, message);
+    await env.jos_customer_db.prepare(
+      `UPDATE line_notification_settings
+          SET last_sent_at = ?, last_error = '', updated_at = ?
+        WHERE setting_id = 1`
+    ).bind(now, now).run();
+    return { sent: true };
+  } catch (error) {
+    await env.jos_customer_db.prepare(
+      `UPDATE line_notification_settings
+          SET last_error = ?, updated_at = ?
+        WHERE setting_id = 1`
+    ).bind(normalizeText(error && error.message, 500), now).run();
+    return { sent: false, reason: 'send-failed' };
+  }
+}
+
 function normalizeKana(value, maxLength) {
   return normalizeText(value, maxLength).replace(/[ぁ-ゖ]/g, character =>
     String.fromCharCode(character.charCodeAt(0) + 0x60)
@@ -337,7 +381,7 @@ function validateProfile(input) {
   return profile;
 }
 
-function publicProfile(row) {
+function publicProfile(row, needsInitialCounseling = false) {
   if (!row) return null;
   return {
     lastName: row.last_name,
@@ -348,7 +392,8 @@ function publicProfile(row) {
     linkStatus: row.link_status,
     registrationType: row.registration_type || 'existing',
     customerType: row.customer_type || '',
-    birthday: row.birthday || ''
+    birthday: row.birthday || '',
+    needsInitialCounseling
   };
 }
 
@@ -373,7 +418,24 @@ async function getProfile(env, identity) {
        FROM customer_profiles
       WHERE line_sub = ?`
   ).bind(identity.sub).first();
-  return json({ ok: true, exists: Boolean(row), profile: publicProfile(row) });
+  const needsInitialCounseling = await customerNeedsInitialCounseling(env, row);
+  return json({
+    ok: true,
+    exists: Boolean(row),
+    profile: publicProfile(row, needsInitialCounseling)
+  });
+}
+
+async function customerNeedsInitialCounseling(env, profile) {
+  if (!profile || profile.registration_type !== 'new' || !profile.jos_customer_id) {
+    return false;
+  }
+  const booking = await env.jos_customer_db.prepare(
+    `SELECT request_id FROM customer_booking_requests
+      WHERE jos_customer_id = ? AND status IN ('pending', 'confirmed')
+      LIMIT 1`
+  ).bind(profile.jos_customer_id).first();
+  return !booking;
 }
 
 export async function getCustomerAnnouncements(env, options = {}) {
@@ -741,6 +803,36 @@ async function adminApi(request, env, pathname) {
           endTime: row.end_time || '',
           status: row.status || '',
           finalPrice: row.final_price === null ? null : Number(row.final_price),
+          createdAt: row.created_at || ''
+        }))
+      });
+    }
+
+    if (pathname === '/api/admin/reservation-actions/recent') {
+      const result = await env.jos_customer_db.prepare(
+        `SELECT action_id, action_type, cancel_status, status,
+                customer_name, original_date, original_start_time,
+                original_end_time, menu_name, requested_date,
+                requested_start_time, requested_end_time, created_at
+           FROM customer_reservation_actions
+          ORDER BY created_at DESC
+          LIMIT 20`
+      ).all();
+      return json({
+        ok: true,
+        actions: (result.results || []).map(row => ({
+          actionId: row.action_id,
+          actionType: row.action_type || '',
+          cancelStatus: row.cancel_status || '',
+          status: row.status || '',
+          customerName: row.customer_name || '',
+          originalDate: row.original_date || '',
+          originalStartTime: row.original_start_time || '',
+          originalEndTime: row.original_end_time || '',
+          menuName: row.menu_name || '',
+          requestedDate: row.requested_date || '',
+          requestedStartTime: row.requested_start_time || '',
+          requestedEndTime: row.requested_end_time || '',
           createdAt: row.created_at || ''
         }))
       });
@@ -1377,7 +1469,7 @@ async function api(request, env, pathname) {
     }
     if (pathname === '/api/availability') {
       const profile = await env.jos_customer_db.prepare(
-        `SELECT jos_customer_id FROM customer_profiles
+        `SELECT jos_customer_id, registration_type FROM customer_profiles
           WHERE line_sub = ? AND link_status = 'approved'`
       ).bind(identity.sub).first();
       if (!profile || !profile.jos_customer_id) {
@@ -1385,7 +1477,28 @@ async function api(request, env, pathname) {
       }
 
       const date = validateCustomerBookingDate(body.date);
-      const treatmentMinutes = Math.max(1, Math.min(780, Math.round(Number(body.treatmentMinutes || 0))));
+      const menuIds = Array.isArray(body.menuIds)
+        ? [...new Set(body.menuIds.map(value => normalizeText(value, 80)).filter(Boolean))].slice(0, 30)
+        : [];
+      if (!menuIds.length) throw new Error('メニューを選択してください。');
+      const placeholders = menuIds.map(() => '?').join(',');
+      const menuResult = await env.jos_customer_db.prepare(
+        `SELECT treatment_time FROM menu_catalog
+          WHERE is_active = 1 AND menu_id IN (${placeholders})`
+      ).bind(...menuIds).all();
+      const menus = menuResult.results || [];
+      if (menus.length !== menuIds.length) {
+        throw new Error('選択されたメニューを確認できませんでした。');
+      }
+      const menuMinutes = menus.reduce(
+        (sum, menu) => sum + Number(menu.treatment_time || 0), 0
+      );
+      const needsInitialCounseling = await customerNeedsInitialCounseling(env, profile);
+      const firstVisitMinutes = needsInitialCounseling ? 15 : 0;
+      const treatmentMinutes = menuMinutes + firstVisitMinutes;
+      if (treatmentMinutes <= 0 || treatmentMinutes > 780) {
+        throw new Error('予約枠時間を確認できませんでした。');
+      }
 
       const result = await env.jos_customer_db.prepare(
         `SELECT start_time, end_time FROM availability_busy
@@ -1419,7 +1532,7 @@ async function api(request, env, pathname) {
 
     if (pathname === '/api/booking/request') {
       const profile = await env.jos_customer_db.prepare(
-        `SELECT jos_customer_id, last_name, first_name, customer_type
+        `SELECT jos_customer_id, last_name, first_name, customer_type, registration_type
            FROM customer_profiles
           WHERE line_sub = ? AND link_status = 'approved'`
       ).bind(identity.sub).first();
@@ -1459,7 +1572,12 @@ async function api(request, env, pathname) {
       const menus = menuResult.results || [];
       if (menus.length !== menuIds.length) throw new Error('選択されたメニューを確認できませんでした。');
 
-      const treatmentTime = menus.reduce((sum, menu) => sum + Number(menu.treatment_time || 0), 0);
+      const menuTreatmentTime = menus.reduce(
+        (sum, menu) => sum + Number(menu.treatment_time || 0), 0
+      );
+      const needsInitialCounseling = await customerNeedsInitialCounseling(env, profile);
+      const firstVisitMinutes = needsInitialCounseling ? 15 : 0;
+      const treatmentTime = menuTreatmentTime + firstVisitMinutes;
       const normalTotal = menus.reduce((sum, menu) => sum + Number(menu.normal_price || 0), 0);
       const studentTotal = menus.reduce((sum, menu) => sum + Number(menu.student_price || menu.normal_price || 0), 0);
       const toMinutes = value => {
@@ -1615,7 +1733,7 @@ async function api(request, env, pathname) {
 
     if (pathname === '/api/reservation/change/request') {
       const profile = await env.jos_customer_db.prepare(
-        `SELECT jos_customer_id FROM customer_profiles
+        `SELECT jos_customer_id, last_name, first_name FROM customer_profiles
           WHERE line_sub = ? AND link_status = 'approved'`
       ).bind(identity.sub).first();
       if (!profile || !profile.jos_customer_id) {
@@ -1640,7 +1758,8 @@ async function api(request, env, pathname) {
       const startTime = normalizeText(body.startTime, 5);
       if (!/^\d{2}:\d{2}$/.test(startTime)) throw new Error('開始時間が正しくありません。');
       const reservation = await env.jos_customer_db.prepare(
-        `SELECT reservation_date, start_time, end_time FROM customer_next_reservations
+        `SELECT reservation_date, start_time, end_time, menu_name
+           FROM customer_next_reservations
           WHERE jos_customer_id = ? AND reservation_id = ?`
       ).bind(profile.jos_customer_id, reservationId).first();
       if (!reservation) throw new Error('対象の予約を確認できませんでした。');
@@ -1667,11 +1786,13 @@ async function api(request, env, pathname) {
       const actionId = crypto.randomUUID().replace(/-/g, '');
       const now = new Date().toISOString();
       const insert = await env.jos_customer_db.prepare(
-        `INSERT INTO customer_reservation_actions
+          `INSERT INTO customer_reservation_actions
            (action_id, line_sub, jos_customer_id, reservation_id,
             action_type, cancel_status, status, created_at, updated_at,
-            requested_date, requested_start_time, requested_end_time)
-         SELECT ?, ?, ?, ?, 'change', '', 'pending', ?, ?, ?, ?, ?
+            requested_date, requested_start_time, requested_end_time,
+            customer_name, original_date, original_start_time,
+            original_end_time, menu_name)
+         SELECT ?, ?, ?, ?, 'change', '', 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
           WHERE NOT EXISTS (
             SELECT 1 FROM availability_busy
              WHERE busy_date = ? AND busy_id <> ?
@@ -1691,6 +1812,9 @@ async function api(request, env, pathname) {
       ).bind(
         actionId, identity.sub, profile.jos_customer_id, reservationId,
         now, now, date, startTime, endTime,
+        `${profile.last_name || ''} ${profile.first_name || ''}`.trim(),
+        reservation.reservation_date, reservation.start_time,
+        reservation.end_time, reservation.menu_name || '',
         date, `R-${reservationId}`, startTime, endTime,
         date, startTime, endTime,
         date, reservationId, startTime, endTime
@@ -1698,12 +1822,23 @@ async function api(request, env, pathname) {
       if (!insert.meta || Number(insert.meta.changes || 0) !== 1) {
         return json({ ok: false, message: '選択中に予約が入りました。別の時間を選択してください。' }, 409);
       }
+      await notifyStoreOfReservationAction(env, {
+        actionType: 'change',
+        customerName: `${profile.last_name || ''} ${profile.first_name || ''}`.trim(),
+        originalDate: reservation.reservation_date,
+        originalStartTime: reservation.start_time,
+        originalEndTime: reservation.end_time,
+        requestedDate: date,
+        requestedStartTime: startTime,
+        requestedEndTime: endTime,
+        menuName: reservation.menu_name || ''
+      });
       return json({ ok: true, actionId, status: 'pending' });
     }
 
     if (pathname === '/api/reservation/cancel/request') {
       const profile = await env.jos_customer_db.prepare(
-        `SELECT jos_customer_id FROM customer_profiles
+        `SELECT jos_customer_id, last_name, first_name FROM customer_profiles
           WHERE line_sub = ? AND link_status = 'approved'`
       ).bind(identity.sub).first();
       if (!profile || !profile.jos_customer_id) {
@@ -1711,7 +1846,8 @@ async function api(request, env, pathname) {
       }
       const reservationId = normalizeText(body.reservationId, 80);
       const reservation = await env.jos_customer_db.prepare(
-        `SELECT reservation_date FROM customer_next_reservations
+        `SELECT reservation_date, start_time, end_time, menu_name
+           FROM customer_next_reservations
           WHERE jos_customer_id = ? AND reservation_id = ?`
       ).bind(profile.jos_customer_id, reservationId).first();
       if (!reservation) throw new Error('対象の予約を確認できませんでした。');
@@ -1726,15 +1862,29 @@ async function api(request, env, pathname) {
         await env.jos_customer_db.prepare(
           `INSERT INTO customer_reservation_actions
              (action_id, line_sub, jos_customer_id, reservation_id,
-              action_type, cancel_status, status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, 'cancel', ?, 'pending', ?, ?)`
+              action_type, cancel_status, status, created_at, updated_at,
+              customer_name, original_date, original_start_time,
+              original_end_time, menu_name)
+           VALUES (?, ?, ?, ?, 'cancel', ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`
         ).bind(
           actionId, identity.sub, profile.jos_customer_id,
-          reservationId, cancelStatus, now, now
+          reservationId, cancelStatus, now, now,
+          `${profile.last_name || ''} ${profile.first_name || ''}`.trim(),
+          reservation.reservation_date, reservation.start_time,
+          reservation.end_time, reservation.menu_name || ''
         ).run();
       } catch (_) {
         return json({ ok: false, message: 'この予約のキャンセル処理を受付済みです。' }, 409);
       }
+      await notifyStoreOfReservationAction(env, {
+        actionType: 'cancel',
+        cancelStatus,
+        customerName: `${profile.last_name || ''} ${profile.first_name || ''}`.trim(),
+        originalDate: reservation.reservation_date,
+        originalStartTime: reservation.start_time,
+        originalEndTime: reservation.end_time,
+        menuName: reservation.menu_name || ''
+      });
       return json({ ok: true, actionId, cancelStatus, status: 'pending' });
     }
 

@@ -16,7 +16,8 @@ test('birthday is required and uses year month day selectors', () => {
   assert.match(page, /id="birthYear"[^>]*required/);
   assert.match(page, /id="birthMonth"[^>]*required/);
   assert.match(page, /id="birthDay"[^>]*required/);
-  assert.match(page, /生年月日<span class="required-mark">必須<\/span>/);
+  assert.match(page, /<span>生年月日<\/span>/);
+  assert.doesNotMatch(page, /生年月日<span class="required-mark">必須<\/span>/);
   assert.match(page, /function initializeBirthdaySelectors/);
   assert.match(page, /function updateBirthDayOptions/);
   assert.match(page, /birthday:getBirthdayValue\(\)/);
