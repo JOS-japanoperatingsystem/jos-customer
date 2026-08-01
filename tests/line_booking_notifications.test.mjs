@@ -18,6 +18,10 @@ const actionMigration = fs.readFileSync(
 assert.match(worker, /oauth2\/v3\/token/);
 assert.match(worker, /v2\/bot\/message\/push/);
 assert.match(worker, /notifyStoreOfBooking/);
+assert.match(worker, /【新しい予約が入りました】/);
+assert.match(worker, /予定料金\$\{price\}円/);
+assert.match(worker, /受付ID：\$\{booking\.requestId\}/);
+assert.match(worker, /\.join\('\\n'\)/);
 assert.match(worker, /\/api\/admin\/line-notifications\/recipient/);
 assert.match(worker, /\/api\/admin\/line-notifications\/test/);
 assert.match(worker, /\/api\/admin\/bookings\/recent/);

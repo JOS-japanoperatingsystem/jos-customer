@@ -66,6 +66,17 @@
     .empty-panel span { display:block; margin-top:8px; color:var(--muted); line-height:1.65; }
     .mypage-section { margin-top:18px; padding-top:18px; border-top:1px solid var(--line); }
     .mypage-section-title { margin:0 0 10px; font-size:16px; font-weight:900; }
+    .access-guide { margin-top:20px; padding-top:20px; border-top:1px solid var(--line); }
+    .access-guide-title { margin:0; font-size:20px; font-weight:900; }
+    .access-guide-note { margin:7px 0 14px; color:var(--muted); font-size:13px; line-height:1.65; }
+    .access-step { margin-top:12px; overflow:hidden; border:1px solid var(--line); border-radius:16px; background:#fff; }
+    .access-step img { display:block; width:100%; aspect-ratio:4/3; object-fit:cover; }
+    .access-step-copy { padding:13px 14px; }
+    .access-step-number { color:var(--blue); font-size:12px; font-weight:900; }
+    .access-step-copy strong { display:block; margin-top:3px; font-size:16px; }
+    .access-step-copy span { display:block; margin-top:5px; color:var(--muted); font-size:13px; line-height:1.6; }
+    .access-video { position:relative; width:100%; padding-top:56.25%; margin-top:14px; overflow:hidden; border-radius:16px; background:#111827; }
+    .access-video iframe { position:absolute; inset:0; width:100%; height:100%; border:0; }
     .connection-row { display:flex; justify-content:space-between; gap:12px; padding:13px 0; border-bottom:1px solid var(--line); }
     .connection-state { color:var(--green); font-weight:900; text-align:right; }
     .bottom-nav { position:fixed; z-index:20; left:50%; bottom:0; transform:translateX(-50%); width:min(100%,600px); display:grid; grid-template-columns:repeat(4,1fr); padding:8px 8px calc(8px + env(safe-area-inset-bottom)); border:1px solid var(--line); border-bottom:0; border-radius:22px 22px 0 0; background:rgba(255,255,255,.97); box-shadow:0 -8px 24px rgba(35,55,90,.10); }
@@ -213,6 +224,15 @@
           <div id="announcementLoading" class="muted">確認中です</div>
           <div id="announcementList" hidden></div>
         </div>
+        <section class="access-guide" aria-labelledby="accessGuideTitle">
+          <h2 id="accessGuideTitle" class="access-guide-title">駐車場から店舗まで</h2>
+          <p class="access-guide-note">初めてご来店の方は、写真と動画をご確認ください。</p>
+          <div class="access-step"><img src="/access_building.jpg" alt="店舗が入るハイクレスト山の田の外観" loading="lazy"><div class="access-step-copy"><span class="access-step-number">STEP 1</span><strong>ハイクレスト山の田へお越しください</strong><span>こちらのマンション内に店舗があります。</span></div></div>
+          <div class="access-step"><img src="/access_parking_entrance.jpg" alt="駐車場入口の青い看板" loading="lazy"><div class="access-step-copy"><span class="access-step-number">STEP 2</span><strong>青い看板が駐車場入口の目印です</strong></div></div>
+          <div class="access-step"><img src="/access_parking_12.jpg" alt="お客様専用駐車スペース12番" loading="lazy"><div class="access-step-copy"><span class="access-step-number">STEP 3</span><strong>お客様は12番をご利用ください</strong><span>11番ではなく、写真左側の12番です。</span></div></div>
+          <div class="access-step"><img src="/access_shop_entrance.jpg" alt="店舗入口の赤いドア" loading="lazy"><div class="access-step-copy"><span class="access-step-number">STEP 4</span><strong>ロゴのある赤いドアが店舗入口です</strong></div></div>
+          <div class="access-video"><iframe src="https://www.youtube.com/embed/DfoXTrJNv6o" title="駐車場から店舗までの行き方" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe></div>
+        </section>
       </div>
 
       <div id="bookingView" class="card" hidden>

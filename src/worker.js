@@ -239,14 +239,18 @@ async function notifyStoreOfBooking(env, booking) {
   ).first();
   if (!setting || !setting.recipient_line_sub) return { sent: false, reason: 'not-configured' };
   const price = Number(booking.price || 0).toLocaleString('ja-JP');
+  const dateParts = String(booking.date || '').match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  const dateLabel = dateParts
+    ? `${dateParts[1]}年${Number(dateParts[2])}月${Number(dateParts[3])}日`
+    : String(booking.date || '');
+  const menus = String(booking.menuNames || '').split(/[,、\/\n]+/)
+    .map(value => value.trim()).filter(Boolean).join('、');
   const message = [
     '【新しい予約が入りました】',
-    '',
-    `${booking.date} ${booking.startTime}〜${booking.endTime}`,
+    `${dateLabel}　${booking.startTime}〜${booking.endTime}`,
     `${booking.customerName} 様`,
-    booking.menuNames,
-    `予定料金：${price}円`,
-    '',
+    menus,
+    `予定料金${price}円`,
     `受付ID：${booking.requestId}`
   ].join('\n');
   const now = new Date().toISOString();
@@ -278,10 +282,12 @@ function customerLifecycleMessage(type, customer) {
     customer.phone ? `電話番号：${customer.phone}` : '',
     customer.customerId ? `顧客ID：${customer.customerId}` : ''
   ].filter(Boolean);
-  return (type === 'new-registration'
-    ? ['【新規顧客が登録されました】', '', ...details, '', 'JOSへ自動登録・連携されます。']
-    : ['【既存顧客のLINE連携が完了しました】', '', ...details, '', '店舗確認後の連携が完了しました。']
-  ).join('\n');
+  if (type === 'new-registration') {
+    return ['【新規顧客が登録されました】', ...details,
+      'JOSへ自動登録・連携されます。'].join('\n');
+  }
+  return ['【お客様ページ連携申請】', ...details,
+    'お客様ページ連携確認をしてください。'].join('\n');
 }
 
 async function deliverCustomerLifecycleNotification(env, row) {
@@ -783,8 +789,10 @@ async function saveProfile(env, identity, input) {
     now
   ).run();
 
-  if (profile.registrationType === 'new') {
-    await queueCustomerLifecycleNotification(env, 'new-registration', identity.sub, {
+  {
+    const lifecycleType = profile.registrationType === 'new'
+      ? 'new-registration' : 'existing-link-request';
+    await queueCustomerLifecycleNotification(env, lifecycleType, identity.sub, {
       lineDisplayName: identity.displayName,
       lastName: profile.lastName,
       firstName: profile.firstName,
@@ -1395,17 +1403,7 @@ async function adminApi(request, env, pathname) {
       if (!result.meta || Number(result.meta.changes || 0) !== 1) {
         return json({ ok: false, message: '対象が見つからないか、すでに連携済みです。' }, 409);
       }
-      if (target && target.registration_type === 'existing') {
-        await queueCustomerLifecycleNotification(env, 'existing-link', target.line_sub, {
-          lineDisplayName: target.line_display_name,
-          lastName: target.last_name,
-          firstName: target.first_name,
-          lastKana: target.last_kana,
-          firstKana: target.first_kana,
-          phone: target.phone,
-          customerId
-        });
-      }
+      // 承認操作の完了通知は送らない。申請通知はお客様の登録時点で送信済み。
       return json({ ok: true });
     }
 
