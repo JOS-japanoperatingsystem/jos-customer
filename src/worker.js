@@ -233,6 +233,7 @@ async function lineWebhook(request, env) {
 }
 
 async function notifyStoreOfBooking(env, booking) {
+  await flushPendingCustomerLifecycleNotifications(env, 10);
   const setting = await env.jos_customer_db.prepare(
     `SELECT recipient_line_sub FROM line_notification_settings WHERE setting_id = 1`
   ).first();
@@ -265,6 +266,78 @@ async function notifyStoreOfBooking(env, booking) {
     ).bind(normalizeText(error && error.message, 500), now).run();
     return { sent: false, reason: 'send-failed' };
   }
+}
+
+function customerLifecycleMessage(type, customer) {
+  const name = [customer.lastName, customer.firstName].filter(Boolean).join(' ') ||
+    customer.lineDisplayName || '氏名未登録';
+  const kana = [customer.lastKana, customer.firstKana].filter(Boolean).join(' ');
+  const details = [
+    `${name} 様`,
+    kana ? `フリガナ：${kana}` : '',
+    customer.phone ? `電話番号：${customer.phone}` : '',
+    customer.customerId ? `顧客ID：${customer.customerId}` : ''
+  ].filter(Boolean);
+  return (type === 'new-registration'
+    ? ['【新規顧客が登録されました】', '', ...details, '', 'JOSへ自動登録・連携されます。']
+    : ['【既存顧客のLINE連携が完了しました】', '', ...details, '', '店舗確認後の連携が完了しました。']
+  ).join('\n');
+}
+
+async function deliverCustomerLifecycleNotification(env, row) {
+  const setting = await env.jos_customer_db.prepare(
+    `SELECT recipient_line_sub FROM line_notification_settings WHERE setting_id = 1`
+  ).first();
+  if (!setting || !setting.recipient_line_sub) return { sent: false, reason: 'not-configured' };
+  const payload = JSON.parse(row.payload_json || '{}');
+  const now = new Date().toISOString();
+  try {
+    await pushLineText(env, setting.recipient_line_sub, customerLifecycleMessage(row.notification_type, payload));
+    await env.jos_customer_db.prepare(
+      `UPDATE customer_lifecycle_notifications
+          SET status = 'sent', sent_at = ?, last_error = ''
+        WHERE event_key = ? AND status = 'pending'`
+    ).bind(now, row.event_key).run();
+    await env.jos_customer_db.prepare(
+      `UPDATE line_notification_settings
+          SET last_sent_at = ?, last_error = '', updated_at = ? WHERE setting_id = 1`
+    ).bind(now, now).run();
+    return { sent: true };
+  } catch (error) {
+    const message = normalizeText(error && error.message, 500);
+    await env.jos_customer_db.prepare(
+      `UPDATE customer_lifecycle_notifications SET last_error = ? WHERE event_key = ?`
+    ).bind(message, row.event_key).run();
+    await env.jos_customer_db.prepare(
+      `UPDATE line_notification_settings SET last_error = ?, updated_at = ? WHERE setting_id = 1`
+    ).bind(message, now).run();
+    return { sent: false, reason: 'send-failed' };
+  }
+}
+
+async function queueCustomerLifecycleNotification(env, type, lineSub, customer) {
+  const eventKey = `${type}:${lineSub}`;
+  const now = new Date().toISOString();
+  await env.jos_customer_db.prepare(
+    `INSERT OR IGNORE INTO customer_lifecycle_notifications
+       (event_key, line_sub, notification_type, status, payload_json, created_at)
+     VALUES (?, ?, ?, 'pending', ?, ?)`
+  ).bind(eventKey, lineSub, type, JSON.stringify(customer || {}), now).run();
+  const row = await env.jos_customer_db.prepare(
+    `SELECT event_key, notification_type, status, payload_json
+       FROM customer_lifecycle_notifications WHERE event_key = ?`
+  ).bind(eventKey).first();
+  if (!row || row.status === 'sent') return { sent: true, duplicate: true };
+  return deliverCustomerLifecycleNotification(env, row);
+}
+
+async function flushPendingCustomerLifecycleNotifications(env, limit = 20) {
+  const pending = await env.jos_customer_db.prepare(
+    `SELECT event_key, notification_type, status, payload_json
+       FROM customer_lifecycle_notifications
+      WHERE status = 'pending' ORDER BY created_at ASC LIMIT ?`
+  ).bind(Math.max(1, Math.min(100, Number(limit) || 20))).all();
+  for (const row of pending.results || []) await deliverCustomerLifecycleNotification(env, row);
 }
 
 async function notifyStoreOfReservationAction(env, action) {
@@ -710,6 +783,17 @@ async function saveProfile(env, identity, input) {
     now
   ).run();
 
+  if (profile.registrationType === 'new') {
+    await queueCustomerLifecycleNotification(env, 'new-registration', identity.sub, {
+      lineDisplayName: identity.displayName,
+      lastName: profile.lastName,
+      firstName: profile.firstName,
+      lastKana: profile.lastKana,
+      firstKana: profile.firstKana,
+      phone: profile.phone
+    });
+  }
+
   return json({ ok: true, profile: { ...profile, linkStatus: 'pending' } });
 }
 
@@ -725,6 +809,7 @@ async function adminApi(request, env, pathname) {
 
   try {
     if (pathname === '/api/admin/line-notifications/status') {
+      await flushPendingCustomerLifecycleNotifications(env, 20);
       const setting = await env.jos_customer_db.prepare(
         `SELECT recipient_line_sub, recipient_display_name, last_sent_at,
                 last_error, updated_at
@@ -1293,6 +1378,12 @@ async function adminApi(request, env, pathname) {
       const customerId = normalizeText(body.customerId, 80);
       if (!approvalKey || !customerId) throw new Error('連携対象が正しくありません。');
 
+      const target = await env.jos_customer_db.prepare(
+        `SELECT line_sub, line_display_name, last_name, first_name, last_kana,
+                first_kana, phone, registration_type
+           FROM customer_profiles
+          WHERE approval_key = ? AND link_status = 'pending'`
+      ).bind(approvalKey).first();
       const now = new Date().toISOString();
       const result = await env.jos_customer_db.prepare(
         `UPDATE customer_profiles
@@ -1303,6 +1394,17 @@ async function adminApi(request, env, pathname) {
 
       if (!result.meta || Number(result.meta.changes || 0) !== 1) {
         return json({ ok: false, message: '対象が見つからないか、すでに連携済みです。' }, 409);
+      }
+      if (target && target.registration_type === 'existing') {
+        await queueCustomerLifecycleNotification(env, 'existing-link', target.line_sub, {
+          lineDisplayName: target.line_display_name,
+          lastName: target.last_name,
+          firstName: target.first_name,
+          lastKana: target.last_kana,
+          firstKana: target.first_kana,
+          phone: target.phone,
+          customerId
+        });
       }
       return json({ ok: true });
     }
