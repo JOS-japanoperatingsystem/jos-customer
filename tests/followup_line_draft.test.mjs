@@ -35,12 +35,26 @@ test('safety state includes active drafts so they leave the candidate list', () 
 
 test('draft list is read-only and exposes no LINE recipient identifier', () => {
   const start = worker.indexOf("if (pathname === '/api/admin/followups/drafts')");
+  const end = worker.indexOf("if (pathname === '/api/admin/followups/draft-approve')", start);
+  assert.ok(start > 0 && end > start);
+  const route = worker.slice(start, end);
+  assert.match(route, /WHERE status IN \('draft', 'approved'\)/);
+  assert.match(route, /readOnly: true/);
+  assert.doesNotMatch(route, /line_sub|pushLineText|INSERT|UPDATE|DELETE/);
+});
+
+test('draft approval records approval but never sends LINE', () => {
+  const start = worker.indexOf("if (pathname === '/api/admin/followups/draft-approve')");
   const end = worker.indexOf("if (pathname === '/api/admin/followups/draft-cancel')", start);
   assert.ok(start > 0 && end > start);
   const route = worker.slice(start, end);
-  assert.match(route, /WHERE status = 'draft'/);
-  assert.match(route, /readOnly: true/);
-  assert.doesNotMatch(route, /line_sub|pushLineText|INSERT|UPDATE|DELETE/);
+  assert.match(route, /confirmation !== '送信せず承認済みにする'/);
+  assert.match(route, /existing\.status !== 'draft'/);
+  assert.match(route, /link_status = 'approved'/);
+  assert.match(route, /followup_opt_outs WHERE jos_customer_id = \?/);
+  assert.match(route, /SET status = 'approved', approved_at = \?/);
+  assert.match(route, /existing\.status === 'approved'/);
+  assert.doesNotMatch(route, /pushLineText|fetch\(|status = 'sending'|status = 'sent'/);
 });
 
 test('only drafts can be cancelled and cancellation never sends LINE', () => {

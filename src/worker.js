@@ -1080,9 +1080,9 @@ async function adminApi(request, env, pathname) {
     if (pathname === '/api/admin/followups/drafts') {
       const result = await env.jos_customer_db.prepare(
         `SELECT delivery_id, jos_customer_id, last_visit_date, timing_group,
-                due_date, part_names_json, message_text, created_at
+                due_date, part_names_json, message_text, status, created_at, approved_at
            FROM followup_deliveries
-          WHERE status = 'draft'
+          WHERE status IN ('draft', 'approved')
           ORDER BY created_at DESC
           LIMIT 500`
       ).all();
@@ -1105,10 +1105,57 @@ async function adminApi(request, env, pathname) {
             dueDate: row.due_date,
             partNames,
             messageText: row.message_text,
-            createdAt: row.created_at
+            status: row.status,
+            createdAt: row.created_at,
+            approvedAt: row.approved_at || ''
           };
         })
       });
+    }
+
+    if (pathname === '/api/admin/followups/draft-approve') {
+      const body = await readJson(request);
+      const deliveryId = normalizeText(body.deliveryId, 80);
+      const confirmation = normalizeText(body.confirmation, 100);
+      if (!/^[A-Za-z0-9-]{16,80}$/.test(deliveryId)) {
+        throw new Error('承認対象の下書きIDを確認できません。');
+      }
+      if (confirmation !== '送信せず承認済みにする') {
+        throw new Error('下書き承認の確認がありません。');
+      }
+      const existing = await env.jos_customer_db.prepare(
+        `SELECT jos_customer_id, due_date, status
+           FROM followup_deliveries WHERE delivery_id = ?`
+      ).bind(deliveryId).first();
+      if (!existing) throw new Error('承認対象の下書きが見つかりません。');
+      if (existing.status === 'approved') {
+        return json({ ok: true, approved: true, idempotent: true });
+      }
+      if (existing.status !== 'draft') {
+        throw new Error('下書き以外の記録は承認できません。');
+      }
+      if (normalizeIsoDateOnly(existing.due_date) > japanDateOnly()) {
+        throw new Error('まだ承認できる送信予定日ではありません。');
+      }
+      const approvedProfile = await env.jos_customer_db.prepare(
+        `SELECT COUNT(*) AS matching_count
+           FROM customer_profiles
+          WHERE jos_customer_id = ? AND link_status = 'approved'`
+      ).bind(existing.jos_customer_id).first();
+      if (Number(approvedProfile && approvedProfile.matching_count || 0) !== 1) {
+        throw new Error('お客様のLINE連携を1件に特定できません。');
+      }
+      const optOut = await env.jos_customer_db.prepare(
+        `SELECT jos_customer_id FROM followup_opt_outs WHERE jos_customer_id = ?`
+      ).bind(existing.jos_customer_id).first();
+      if (optOut) throw new Error('LINE配信停止中のため承認できません。');
+      const now = new Date().toISOString();
+      await env.jos_customer_db.prepare(
+        `UPDATE followup_deliveries
+            SET status = 'approved', approved_at = ?, last_error = ''
+          WHERE delivery_id = ? AND status = 'draft'`
+      ).bind(now, deliveryId).run();
+      return json({ ok: true, approved: true, idempotent: false });
     }
 
     if (pathname === '/api/admin/followups/draft-cancel') {
