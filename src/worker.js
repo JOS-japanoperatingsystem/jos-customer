@@ -1634,7 +1634,7 @@ async function adminApi(request, env, pathname) {
 
     if (pathname === '/api/admin/approved') {
       const result = await env.jos_customer_db.prepare(
-        `SELECT jos_customer_id
+        `SELECT jos_customer_id, last_name, first_name
            FROM customer_profiles
           WHERE link_status = 'approved' AND jos_customer_id IS NOT NULL
           ORDER BY approved_at ASC
@@ -1642,7 +1642,10 @@ async function adminApi(request, env, pathname) {
       ).all();
       return json({
         ok: true,
-        profiles: (result.results || []).map(row => ({ customerId: row.jos_customer_id }))
+        profiles: (result.results || []).map(row => ({
+          customerId: row.jos_customer_id,
+          registeredCustomerName: `${row.last_name || ''} ${row.first_name || ''}`.trim()
+        }))
       });
     }
 
