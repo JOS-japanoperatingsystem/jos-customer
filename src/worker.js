@@ -1080,9 +1080,11 @@ async function adminApi(request, env, pathname) {
     if (pathname === '/api/admin/followups/drafts') {
       const result = await env.jos_customer_db.prepare(
         `SELECT delivery_id, jos_customer_id, last_visit_date, timing_group,
-                due_date, part_names_json, message_text, status, created_at, approved_at
+                due_date, part_names_json, message_text, status, attempt_count,
+                created_at, approved_at, sending_started_at, sent_at,
+                last_attempt_at, last_error
            FROM followup_deliveries
-          WHERE status IN ('draft', 'approved')
+          WHERE status IN ('draft', 'approved', 'sending', 'sent', 'failed')
           ORDER BY created_at DESC
           LIMIT 500`
       ).all();
@@ -1106,8 +1108,13 @@ async function adminApi(request, env, pathname) {
             partNames,
             messageText: row.message_text,
             status: row.status,
+            attemptCount: Number(row.attempt_count || 0),
             createdAt: row.created_at,
-            approvedAt: row.approved_at || ''
+            approvedAt: row.approved_at || '',
+            sendingStartedAt: row.sending_started_at || '',
+            sentAt: row.sent_at || '',
+            lastAttemptAt: row.last_attempt_at || '',
+            lastError: row.last_error || ''
           };
         })
       });
@@ -1156,6 +1163,89 @@ async function adminApi(request, env, pathname) {
           WHERE delivery_id = ? AND status = 'draft'`
       ).bind(now, deliveryId).run();
       return json({ ok: true, approved: true, idempotent: false });
+    }
+
+    if (pathname === '/api/admin/followups/single-send') {
+      const body = await readJson(request);
+      const deliveryId = normalizeText(body.deliveryId, 80);
+      const confirmation = normalizeText(body.confirmation, 100);
+      const revalidatedAtText = normalizeText(body.revalidatedAt, 40);
+      if (!/^[A-Za-z0-9-]{16,80}$/.test(deliveryId)) {
+        throw new Error('送信対象の承認記録を確認できません。');
+      }
+      if (confirmation !== '承認済みのお客様1人へ送信') {
+        throw new Error('お客様1人への送信確認がありません。');
+      }
+      const revalidatedAt = new Date(revalidatedAtText);
+      const validationAge = Date.now() - revalidatedAt.getTime();
+      if (Number.isNaN(revalidatedAt.getTime()) || validationAge < -5000 || validationAge > 60000) {
+        throw new Error('JOSの送信直前確認が期限切れです。候補を更新してください。');
+      }
+      const delivery = await env.jos_customer_db.prepare(
+        `SELECT jos_customer_id, due_date, message_text, status
+           FROM followup_deliveries WHERE delivery_id = ?`
+      ).bind(deliveryId).first();
+      if (!delivery) throw new Error('送信対象の承認記録が見つかりません。');
+      if (delivery.status === 'sent') {
+        return json({ ok: true, sent: true, idempotent: true });
+      }
+      if (delivery.status !== 'approved') {
+        throw new Error('承認済み以外の記録は送信できません。');
+      }
+      if (normalizeIsoDateOnly(delivery.due_date) > japanDateOnly()) {
+        throw new Error('まだ送信予定日ではありません。');
+      }
+      const profiles = await env.jos_customer_db.prepare(
+        `SELECT line_sub
+           FROM customer_profiles
+          WHERE jos_customer_id = ? AND link_status = 'approved'
+          LIMIT 2`
+      ).bind(delivery.jos_customer_id).all();
+      const linkedProfiles = (profiles.results || []).filter(row => row.line_sub);
+      if (linkedProfiles.length !== 1) {
+        throw new Error('お客様の送信先LINEを1件に特定できません。');
+      }
+      const optOut = await env.jos_customer_db.prepare(
+        `SELECT jos_customer_id FROM followup_opt_outs WHERE jos_customer_id = ?`
+      ).bind(delivery.jos_customer_id).first();
+      if (optOut) throw new Error('LINE配信停止中のため送信できません。');
+      const cooldownSince = new Date(Date.now() - 14 * 86400000).toISOString();
+      const recentSent = await env.jos_customer_db.prepare(
+        `SELECT delivery_id FROM followup_deliveries
+          WHERE jos_customer_id = ? AND status = 'sent' AND sent_at >= ?
+          LIMIT 1`
+      ).bind(delivery.jos_customer_id, cooldownSince).first();
+      if (recentSent) throw new Error('最近LINEを送信しているため送信できません。');
+      const now = new Date().toISOString();
+      const claim = await env.jos_customer_db.prepare(
+        `UPDATE followup_deliveries
+            SET status = 'sending', attempt_count = attempt_count + 1,
+                sending_started_at = ?, last_attempt_at = ?, last_error = ''
+          WHERE delivery_id = ? AND status = 'approved'`
+      ).bind(now, now, deliveryId).run();
+      if (Number(claim && claim.meta && claim.meta.changes || 0) !== 1) {
+        throw new Error('送信開始を安全に記録できませんでした。送信していません。');
+      }
+      try {
+        await pushLineText(env, linkedProfiles[0].line_sub, delivery.message_text);
+      } catch (error) {
+        await env.jos_customer_db.prepare(
+          `UPDATE followup_deliveries
+              SET status = 'failed', last_error = ?
+            WHERE delivery_id = ? AND status = 'sending'`
+        ).bind(normalizeText(error && error.message, 500), deliveryId).run();
+        throw error;
+      }
+      const sentAt = new Date().toISOString();
+      const finalized = await env.jos_customer_db.prepare(
+        `UPDATE followup_deliveries
+            SET status = 'sent', sent_at = ?, last_error = ''
+          WHERE delivery_id = ? AND status = 'sending'`
+      ).bind(sentAt, deliveryId).run();
+      if (Number(finalized && finalized.meta && finalized.meta.changes || 0) !== 1) {
+        throw new Error('LINE送信後の記録を完了できませんでした。自動再送は行いません。');
+      }
+      return json({ ok: true, sent: true, idempotent: false, sentAt });
     }
 
     if (pathname === '/api/admin/followups/draft-cancel') {
@@ -1516,9 +1606,10 @@ async function adminApi(request, env, pathname) {
           LIMIT 1000`
       ).all();
       const deliveries = await env.jos_customer_db.prepare(
-        `SELECT jos_customer_id, last_visit_date, sent_at, status
+        `SELECT delivery_id, jos_customer_id, last_visit_date, timing_group,
+                due_date, sent_at, status
            FROM followup_deliveries
-          WHERE status IN ('draft', 'approved', 'sending', 'sent')
+          WHERE status IN ('draft', 'approved', 'sending', 'sent', 'failed')
           ORDER BY created_at DESC
           LIMIT 5000`
       ).all();
@@ -1530,8 +1621,11 @@ async function adminApi(request, env, pathname) {
         })),
         optOutCustomerIds: (optOuts.results || []).map(row => row.jos_customer_id),
         deliveries: (deliveries.results || []).map(row => ({
+          deliveryId: row.delivery_id,
           customerId: row.jos_customer_id,
           lastVisitDate: row.last_visit_date,
+          timingGroup: row.timing_group,
+          dueDate: row.due_date,
           sentAt: row.sent_at || '',
           status: row.status
         }))
