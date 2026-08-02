@@ -1192,6 +1192,43 @@ async function adminApi(request, env, pathname) {
       });
     }
 
+    if (pathname === '/api/admin/followups/safety-state') {
+      const approved = await env.jos_customer_db.prepare(
+        `SELECT jos_customer_id
+           FROM customer_profiles
+          WHERE link_status = 'approved' AND jos_customer_id IS NOT NULL
+          ORDER BY approved_at ASC
+          LIMIT 1000`
+      ).all();
+      const optOuts = await env.jos_customer_db.prepare(
+        `SELECT jos_customer_id
+           FROM followup_opt_outs
+          ORDER BY updated_at DESC
+          LIMIT 1000`
+      ).all();
+      const deliveries = await env.jos_customer_db.prepare(
+        `SELECT jos_customer_id, last_visit_date, sent_at, status
+           FROM followup_deliveries
+          WHERE status = 'sent'
+          ORDER BY sent_at DESC
+          LIMIT 5000`
+      ).all();
+      return json({
+        ok: true,
+        readOnly: true,
+        approvedProfiles: (approved.results || []).map(row => ({
+          customerId: row.jos_customer_id
+        })),
+        optOutCustomerIds: (optOuts.results || []).map(row => row.jos_customer_id),
+        deliveries: (deliveries.results || []).map(row => ({
+          customerId: row.jos_customer_id,
+          lastVisitDate: row.last_visit_date,
+          sentAt: row.sent_at || '',
+          status: row.status
+        }))
+      });
+    }
+
     if (pathname === '/api/admin/approved') {
       const result = await env.jos_customer_db.prepare(
         `SELECT jos_customer_id
