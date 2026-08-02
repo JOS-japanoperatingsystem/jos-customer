@@ -32,3 +32,26 @@ test('safety state includes active drafts so they leave the candidate list', () 
   const route = worker.slice(start, end);
   assert.match(route, /status IN \('draft', 'approved', 'sending', 'sent'\)/);
 });
+
+test('draft list is read-only and exposes no LINE recipient identifier', () => {
+  const start = worker.indexOf("if (pathname === '/api/admin/followups/drafts')");
+  const end = worker.indexOf("if (pathname === '/api/admin/followups/draft-cancel')", start);
+  assert.ok(start > 0 && end > start);
+  const route = worker.slice(start, end);
+  assert.match(route, /WHERE status = 'draft'/);
+  assert.match(route, /readOnly: true/);
+  assert.doesNotMatch(route, /line_sub|pushLineText|INSERT|UPDATE|DELETE/);
+});
+
+test('only drafts can be cancelled and cancellation never sends LINE', () => {
+  const start = worker.indexOf("if (pathname === '/api/admin/followups/draft-cancel')");
+  const end = worker.indexOf("if (pathname === '/api/admin/bookings/recent')", start);
+  assert.ok(start > 0 && end > start);
+  const route = worker.slice(start, end);
+  assert.match(route, /confirmation !== '下書きを取り消す'/);
+  assert.match(route, /existing\.status !== 'draft'/);
+  assert.match(route, /SET status = 'cancelled'/);
+  assert.match(route, /WHERE delivery_id = \? AND status = 'draft'/);
+  assert.match(route, /existing\.status === 'cancelled'/);
+  assert.doesNotMatch(route, /pushLineText|fetch\(|DELETE/);
+});

@@ -1077,6 +1077,68 @@ async function adminApi(request, env, pathname) {
       return json({ ok: true, saved: true, idempotent: false, deliveryId: draftId });
     }
 
+    if (pathname === '/api/admin/followups/drafts') {
+      const result = await env.jos_customer_db.prepare(
+        `SELECT delivery_id, jos_customer_id, last_visit_date, timing_group,
+                due_date, part_names_json, message_text, created_at
+           FROM followup_deliveries
+          WHERE status = 'draft'
+          ORDER BY created_at DESC
+          LIMIT 500`
+      ).all();
+      return json({
+        ok: true,
+        readOnly: true,
+        drafts: (result.results || []).map(row => {
+          let partNames = [];
+          try {
+            const parsed = JSON.parse(row.part_names_json || '[]');
+            if (Array.isArray(parsed)) partNames = parsed.map(value => normalizeText(value, 100));
+          } catch (_) {
+            partNames = [];
+          }
+          return {
+            deliveryId: row.delivery_id,
+            customerId: row.jos_customer_id,
+            lastVisitDate: row.last_visit_date,
+            timingGroup: row.timing_group,
+            dueDate: row.due_date,
+            partNames,
+            messageText: row.message_text,
+            createdAt: row.created_at
+          };
+        })
+      });
+    }
+
+    if (pathname === '/api/admin/followups/draft-cancel') {
+      const body = await readJson(request);
+      const deliveryId = normalizeText(body.deliveryId, 80);
+      const confirmation = normalizeText(body.confirmation, 100);
+      if (!/^[A-Za-z0-9-]{16,80}$/.test(deliveryId)) {
+        throw new Error('取消対象の下書きIDを確認できません。');
+      }
+      if (confirmation !== '下書きを取り消す') {
+        throw new Error('下書き取消の確認がありません。');
+      }
+      const existing = await env.jos_customer_db.prepare(
+        `SELECT status FROM followup_deliveries WHERE delivery_id = ?`
+      ).bind(deliveryId).first();
+      if (!existing) throw new Error('取消対象の下書きが見つかりません。');
+      if (existing.status === 'cancelled') {
+        return json({ ok: true, cancelled: true, idempotent: true });
+      }
+      if (existing.status !== 'draft') {
+        throw new Error('下書き以外の記録は取り消せません。');
+      }
+      await env.jos_customer_db.prepare(
+        `UPDATE followup_deliveries
+            SET status = 'cancelled', last_error = ''
+          WHERE delivery_id = ? AND status = 'draft'`
+      ).bind(deliveryId).run();
+      return json({ ok: true, cancelled: true, idempotent: false });
+    }
+
     if (pathname === '/api/admin/bookings/recent') {
       const result = await env.jos_customer_db.prepare(
         `SELECT request_id, customer_name, menu_names, reservation_date,
