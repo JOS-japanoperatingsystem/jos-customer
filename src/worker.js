@@ -485,6 +485,39 @@ function validateCustomerBookingDate(date) {
   return date;
 }
 
+const DEFAULT_BOOKING_LEAD_MINUTES = 60;
+const MAX_BOOKING_LEAD_MINUTES = 1440;
+
+function normalizeBookingLeadMinutes(value) {
+  const minutes = Number(value);
+  if (!Number.isInteger(minutes) || minutes < 0 || minutes > MAX_BOOKING_LEAD_MINUTES) {
+    throw new Error('直前予約受付時間は0〜1440分の整数で入力してください。');
+  }
+  return minutes;
+}
+
+async function getBookingLeadMinutes(env) {
+  try {
+    const setting = await env.jos_customer_db.prepare(
+      `SELECT lead_minutes FROM booking_settings WHERE setting_id = 1`
+    ).first();
+    return normalizeBookingLeadMinutes(
+      setting && setting.lead_minutes !== null
+        ? Number(setting.lead_minutes)
+        : DEFAULT_BOOKING_LEAD_MINUTES
+    );
+  } catch (error) {
+    return DEFAULT_BOOKING_LEAD_MINUTES;
+  }
+}
+
+function isInsideBookingLeadTime(date, startTime, leadMinutes, nowMs) {
+  const startAt = Date.parse(`${date}T${startTime}:00+09:00`);
+  if (!Number.isFinite(startAt)) return true;
+  const cutoffAt = startAt - normalizeBookingLeadMinutes(leadMinutes) * 60 * 1000;
+  return Number(nowMs === undefined ? Date.now() : nowMs) >= cutoffAt;
+}
+
 function validateProfile(input) {
   const profile = {
     lastName: normalizeText(input.lastName, 40),
@@ -882,6 +915,27 @@ async function adminApi(request, env, pathname) {
   if (!adminAuthorized(request, env)) return json({ ok: false, message: '管理認証に失敗しました。' }, 401);
 
   try {
+    if (pathname === '/api/admin/booking-settings/get') {
+      return json({
+        ok: true,
+        leadMinutes: await getBookingLeadMinutes(env)
+      });
+    }
+
+    if (pathname === '/api/admin/booking-settings/save') {
+      const body = await readJson(request);
+      const leadMinutes = normalizeBookingLeadMinutes(body.leadMinutes);
+      const now = new Date().toISOString();
+      await env.jos_customer_db.prepare(
+        `INSERT INTO booking_settings (setting_id, lead_minutes, updated_at)
+         VALUES (1, ?, ?)
+         ON CONFLICT(setting_id) DO UPDATE SET
+           lead_minutes = excluded.lead_minutes,
+           updated_at = excluded.updated_at`
+      ).bind(leadMinutes, now).run();
+      return json({ ok: true, leadMinutes, updatedAt: now });
+    }
+
     if (pathname === '/api/admin/line-notifications/status') {
       await flushPendingCustomerLifecycleNotifications(env, 20);
       const setting = await env.jos_customer_db.prepare(
@@ -2451,17 +2505,17 @@ async function api(request, env, pathname) {
         end: toMinutes(row.end_time)
       }));
       const slots = [];
-      const tokyoNow = new Date(Date.now() + 9 * 60 * 60 * 1000);
-      const today = tokyoNow.toISOString().slice(0, 10);
-      const currentMinutes = tokyoNow.getUTCHours() * 60 + tokyoNow.getUTCMinutes();
+      const leadMinutes = await getBookingLeadMinutes(env);
+      const nowMs = Date.now();
       for (let start = 10 * 60; start + treatmentMinutes <= 23 * 60; start += 30) {
         const end = start + treatmentMinutes;
-        const isPast = date === today && start <= currentMinutes;
-        if (!isPast && !busy.some(item => start < item.end && end > item.start)) {
-          slots.push(`${String(Math.floor(start / 60)).padStart(2, '0')}:${String(start % 60).padStart(2, '0')}`);
+        const slotTime = `${String(Math.floor(start / 60)).padStart(2, '0')}:${String(start % 60).padStart(2, '0')}`;
+        const isClosed = isInsideBookingLeadTime(date, slotTime, leadMinutes, nowMs);
+        if (!isClosed && !busy.some(item => start < item.end && end > item.start)) {
+          slots.push(slotTime);
         }
       }
-      return json({ ok: true, date, treatmentMinutes, slots });
+      return json({ ok: true, date, treatmentMinutes, leadMinutes, slots });
     }
 
     if (pathname === '/api/booking/request') {
@@ -2523,11 +2577,9 @@ async function api(request, env, pathname) {
       if (treatmentTime <= 0 || start < 10 * 60 || end > 23 * 60 || start % 30 !== 0) {
         throw new Error('選択された予約時間を確認できませんでした。');
       }
-      const tokyoNow = new Date(Date.now() + 9 * 60 * 60 * 1000);
-      const tokyoToday = tokyoNow.toISOString().slice(0, 10);
-      const currentMinutes = tokyoNow.getUTCHours() * 60 + tokyoNow.getUTCMinutes();
-      if (date === tokyoToday && start <= currentMinutes) {
-        throw new Error('過ぎた時間は予約できません。');
+      const leadMinutes = await getBookingLeadMinutes(env);
+      if (isInsideBookingLeadTime(date, startTime, leadMinutes)) {
+        throw new Error(`この時間の受付は予約開始の${leadMinutes}分前で終了しました。`);
       }
       const endTime = `${String(Math.floor(end / 60)).padStart(2, '0')}:${String(end % 60).padStart(2, '0')}`;
       const requestId = crypto.randomUUID().replace(/-/g, '');
@@ -2649,20 +2701,19 @@ async function api(request, env, pathname) {
         end: toMinutes(row.end_time)
       }));
       const slots = [];
-      const tokyoNow = new Date(Date.now() + 9 * 60 * 60 * 1000);
-      const today = tokyoNow.toISOString().slice(0, 10);
-      const currentMinutes = tokyoNow.getUTCHours() * 60 + tokyoNow.getUTCMinutes();
+      const leadMinutes = await getBookingLeadMinutes(env);
+      const nowMs = Date.now();
       for (let start = 10 * 60; start + treatmentMinutes <= 23 * 60; start += 30) {
         const end = start + treatmentMinutes;
-        const isPast = date === today && start <= currentMinutes;
         const slotTime = `${String(Math.floor(start / 60)).padStart(2, '0')}:${String(start % 60).padStart(2, '0')}`;
+        const isClosed = isInsideBookingLeadTime(date, slotTime, leadMinutes, nowMs);
         const isCurrent = date === reservation.reservation_date &&
           slotTime === reservation.start_time;
-        if (!isPast && !isCurrent && !busy.some(item => start < item.end && end > item.start)) {
+        if (!isClosed && !isCurrent && !busy.some(item => start < item.end && end > item.start)) {
           slots.push(slotTime);
         }
       }
-      return json({ ok: true, date, treatmentMinutes, slots });
+      return json({ ok: true, date, treatmentMinutes, leadMinutes, slots });
     }
 
     if (pathname === '/api/reservation/change/request') {
@@ -2710,11 +2761,9 @@ async function api(request, env, pathname) {
       if (treatmentMinutes <= 0 || start < 10 * 60 || end > 23 * 60 || start % 30 !== 0) {
         throw new Error('変更後の時間を確認できませんでした。');
       }
-      const tokyoNow = new Date(Date.now() + 9 * 60 * 60 * 1000);
-      const tokyoToday = tokyoNow.toISOString().slice(0, 10);
-      const currentMinutes = tokyoNow.getUTCHours() * 60 + tokyoNow.getUTCMinutes();
-      if (date === tokyoToday && start <= currentMinutes) {
-        throw new Error('過ぎた時間には変更できません。');
+      const leadMinutes = await getBookingLeadMinutes(env);
+      if (isInsideBookingLeadTime(date, startTime, leadMinutes)) {
+        throw new Error(`この時間への変更受付は予約開始の${leadMinutes}分前で終了しました。`);
       }
       const endTime = `${String(Math.floor(end / 60)).padStart(2, '0')}:${String(end % 60).padStart(2, '0')}`;
       const actionId = crypto.randomUUID().replace(/-/g, '');
