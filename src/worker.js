@@ -835,8 +835,8 @@ async function saveProfile(env, identity, input) {
       await env.jos_customer_db.prepare(
         `INSERT INTO customer_profile_update_requests
            (request_id, line_sub, jos_customer_id, last_name, first_name,
-            last_kana, first_kana, phone, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+            last_kana, first_kana, phone, birthday, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
       ).bind(
         requestId,
         identity.sub,
@@ -846,6 +846,7 @@ async function saveProfile(env, identity, input) {
         profile.lastKana,
         profile.firstKana,
         profile.phone,
+        profile.birthday,
         now,
         now
       ).run();
@@ -1853,7 +1854,7 @@ async function adminApi(request, env, pathname) {
     if (pathname === '/api/admin/profile-updates/pending') {
       const result = await env.jos_customer_db.prepare(
         `SELECT request_id, jos_customer_id, last_name, first_name,
-                last_kana, first_kana, phone
+                last_kana, first_kana, phone, birthday
            FROM customer_profile_update_requests
           WHERE status = 'pending'
           ORDER BY created_at ASC
@@ -1868,7 +1869,8 @@ async function adminApi(request, env, pathname) {
           firstName: row.first_name,
           lastKana: row.last_kana,
           firstKana: row.first_kana,
-          phone: row.phone
+          phone: row.phone,
+          birthday: row.birthday || ''
         }))
       });
     }
@@ -1878,7 +1880,7 @@ async function adminApi(request, env, pathname) {
       const requestId = normalizeText(body.requestId, 100);
       if (!requestId) throw new Error('変更申請IDがありません。');
       const row = await env.jos_customer_db.prepare(
-        `SELECT line_sub, last_name, first_name, last_kana, first_kana, phone
+        `SELECT line_sub, last_name, first_name, last_kana, first_kana, phone, birthday
            FROM customer_profile_update_requests
           WHERE request_id = ? AND status = 'pending'`
       ).bind(requestId).first();
@@ -1901,7 +1903,7 @@ async function adminApi(request, env, pathname) {
         statements.push(env.jos_customer_db.prepare(
           `UPDATE customer_profiles
               SET last_name = ?, first_name = ?, last_kana = ?,
-                  first_kana = ?, phone = ?, updated_at = ?
+                  first_kana = ?, phone = ?, birthday = ?, updated_at = ?
             WHERE line_sub = ? AND link_status = 'approved'`
         ).bind(
           row.last_name,
@@ -1909,6 +1911,7 @@ async function adminApi(request, env, pathname) {
           row.last_kana,
           row.first_kana,
           row.phone,
+          row.birthday,
           now,
           row.line_sub
         ));
@@ -2320,13 +2323,39 @@ async function adminApi(request, env, pathname) {
            FROM customer_profiles
           WHERE approval_key = ? AND link_status = 'pending'`
       ).bind(approvalKey).first();
+      if (!target) {
+        return json({ ok: false, message: '対象が見つからないか、すでに連携済みです。' }, 409);
+      }
       const now = new Date().toISOString();
-      const result = await env.jos_customer_db.prepare(
+      const statements = [];
+      if ((target.registration_type || 'existing') === 'existing') {
+        statements.push(env.jos_customer_db.prepare(
+          `INSERT OR IGNORE INTO customer_profile_update_requests
+             (request_id, line_sub, jos_customer_id, last_name, first_name,
+              last_kana, first_kana, phone, birthday, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+        ).bind(
+          `link-${approvalKey}`,
+          target.line_sub,
+          customerId,
+          target.last_name,
+          target.first_name,
+          target.last_kana,
+          target.first_kana,
+          target.phone,
+          target.birthday || '',
+          now,
+          now
+        ));
+      }
+      statements.push(env.jos_customer_db.prepare(
         `UPDATE customer_profiles
             SET link_status = 'approved', jos_customer_id = ?,
                 approved_at = ?, updated_at = ?
           WHERE approval_key = ? AND link_status = 'pending'`
-      ).bind(customerId, now, now, approvalKey).run();
+      ).bind(customerId, now, now, approvalKey));
+      const batchResult = await env.jos_customer_db.batch(statements);
+      const result = batchResult[batchResult.length - 1];
 
       if (!result.meta || Number(result.meta.changes || 0) !== 1) {
         return json({ ok: false, message: '対象が見つからないか、すでに連携済みです。' }, 409);
