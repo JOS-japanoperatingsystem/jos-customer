@@ -93,6 +93,14 @@ function normalizeText(value, maxLength) {
   return String(value || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, maxLength);
 }
 
+function normalizeLineMessage(value, maxLength) {
+  return String(value || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    .trim()
+    .slice(0, maxLength);
+}
+
 async function issueLineMessagingToken(env) {
   const channelId = normalizeText(env.LINE_MESSAGING_CHANNEL_ID, 40);
   const channelSecret = normalizeText(env.LINE_MESSAGING_CHANNEL_SECRET, 200);
@@ -126,7 +134,7 @@ async function pushLineText(env, lineSub, text) {
     },
     body: JSON.stringify({
       to: normalizeText(lineSub, 100),
-      messages: [{ type: 'text', text: normalizeText(text, 4500) }]
+      messages: [{ type: 'text', text: normalizeLineMessage(text, 4500) }]
     })
   });
   if (!response.ok) {
@@ -167,6 +175,24 @@ async function getLineMessagingProfile(env, token, lineUserId) {
   if (!response.ok) return { displayName: 'LINE通知先' };
   const profile = await response.json();
   return { displayName: normalizeText(profile.displayName, 100) || 'LINE通知先' };
+}
+
+function followupAdminTestMessage(messageType) {
+  const treatmentLabel = messageType === 'beard' ? 'ひげ脱毛' : '体・VIO脱毛';
+  return [
+    '【管理者本人向けテスト】',
+    'このメッセージは後追いLINEの表示確認用です。お客様には送信されていません。',
+    '',
+    '〇〇 様',
+    '',
+    'いつもメンズ脱毛JAPANをご利用いただきありがとうございます。',
+    `前回の${treatmentLabel}から、次回ご来店の目安となる時期になりました。`,
+    '',
+    'ご予約は、下記のお客様ページを開き、画面下の「予約する」からお申し込みいただけます。',
+    'https://jos-customer.japan-operating-system.workers.dev/',
+    '',
+    '※すでにご予約・ご連絡済みの場合は、行き違いのためご容赦ください。'
+  ].join('\n');
 }
 
 async function replyLineText(token, replyToken, text) {
@@ -875,6 +901,87 @@ async function adminApi(request, env, pathname) {
       await pushLineText(env, setting.recipient_line_sub,
         '【JOS通知テスト】\n予約通知の受信設定が完了しました。');
       return json({ ok: true });
+    }
+
+    if (pathname === '/api/admin/followups/admin-test-status') {
+      const setting = await env.jos_customer_db.prepare(
+        `SELECT recipient_line_sub, recipient_display_name
+           FROM line_notification_settings WHERE setting_id = 1`
+      ).first();
+      return json({
+        ok: true,
+        configured: Boolean(setting && setting.recipient_line_sub),
+        recipientDisplayName: setting && setting.recipient_display_name || ''
+      });
+    }
+
+    if (pathname === '/api/admin/followups/admin-test-send') {
+      const body = await readJson(request);
+      const testId = normalizeText(body.testId, 80);
+      const messageType = normalizeText(body.messageType, 20);
+      const confirmation = normalizeText(body.confirmation, 100);
+      if (!/^[A-Za-z0-9-]{16,80}$/.test(testId)) {
+        throw new Error('管理者テスト送信IDを確認できません。');
+      }
+      if (!['beard', 'body_vio'].includes(messageType)) {
+        throw new Error('管理者テストの文章種別を確認できません。');
+      }
+      if (confirmation !== '管理者本人へテスト送信') {
+        throw new Error('管理者本人へのテスト送信確認がありません。');
+      }
+      const existing = await env.jos_customer_db.prepare(
+        `SELECT status FROM followup_admin_tests WHERE test_id = ?`
+      ).bind(testId).first();
+      if (existing) {
+        if (existing.status === 'sent') {
+          return json({ ok: true, sent: true, idempotent: true });
+        }
+        throw new Error('同じテスト送信は再実行できません。');
+      }
+      const setting = await env.jos_customer_db.prepare(
+        `SELECT recipient_line_sub, recipient_display_name
+           FROM line_notification_settings WHERE setting_id = 1`
+      ).first();
+      if (!setting || !setting.recipient_line_sub) {
+        throw new Error('管理者の通知先LINEが未設定です。');
+      }
+      const message = followupAdminTestMessage(messageType);
+      const now = new Date().toISOString();
+      await env.jos_customer_db.prepare(
+        `INSERT INTO followup_admin_tests
+           (test_id, message_type, recipient_line_sub, recipient_display_name,
+            message_text, status, created_at)
+         VALUES (?, ?, ?, ?, ?, 'sending', ?)`
+      ).bind(
+        testId,
+        messageType,
+        setting.recipient_line_sub,
+        setting.recipient_display_name || '',
+        message,
+        now
+      ).run();
+      try {
+        await pushLineText(env, setting.recipient_line_sub, message);
+        const sentAt = new Date().toISOString();
+        await env.jos_customer_db.prepare(
+          `UPDATE followup_admin_tests
+              SET status = 'sent', sent_at = ?, last_error = ''
+            WHERE test_id = ? AND status = 'sending'`
+        ).bind(sentAt, testId).run();
+        return json({
+          ok: true,
+          sent: true,
+          idempotent: false,
+          recipientDisplayName: setting.recipient_display_name || ''
+        });
+      } catch (error) {
+        await env.jos_customer_db.prepare(
+          `UPDATE followup_admin_tests
+              SET status = 'failed', last_error = ?
+            WHERE test_id = ? AND status = 'sending'`
+        ).bind(normalizeText(error && error.message, 500), testId).run();
+        throw error;
+      }
     }
 
     if (pathname === '/api/admin/bookings/recent') {
