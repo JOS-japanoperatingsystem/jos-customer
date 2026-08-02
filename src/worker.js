@@ -101,6 +101,25 @@ function normalizeLineMessage(value, maxLength) {
     .slice(0, maxLength);
 }
 
+function normalizeIsoDateOnly(value) {
+  const text = normalizeText(value, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return '';
+  const date = new Date(`${text}T00:00:00.000Z`);
+  return Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== text ? '' : text;
+}
+
+function addIsoDays(value, days) {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + Number(days || 0));
+  return date.toISOString().slice(0, 10);
+}
+
+function japanDateOnly() {
+  return new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit'
+  }).format(new Date());
+}
+
 async function issueLineMessagingToken(env) {
   const channelId = normalizeText(env.LINE_MESSAGING_CHANNEL_ID, 40);
   const channelSecret = normalizeText(env.LINE_MESSAGING_CHANNEL_SECRET, 200);
@@ -984,6 +1003,80 @@ async function adminApi(request, env, pathname) {
       }
     }
 
+    if (pathname === '/api/admin/followups/draft-save') {
+      const body = await readJson(request);
+      const draftId = normalizeText(body.draftId, 80);
+      const customerId = normalizeText(body.customerId, 100);
+      const lastVisitDate = normalizeIsoDateOnly(body.lastVisitDate);
+      const timingGroup = normalizeText(body.timingGroup, 20);
+      const dueDate = normalizeIsoDateOnly(body.dueDate);
+      const messageText = normalizeLineMessage(body.messageText, 4500);
+      const confirmation = normalizeText(body.confirmation, 100);
+      const partNames = Array.isArray(body.partNames)
+        ? body.partNames.slice(0, 100).map(value => normalizeText(value, 100)).filter(Boolean)
+        : [];
+      if (!/^[A-Za-z0-9-]{16,80}$/.test(draftId)) {
+        throw new Error('下書きIDを確認できません。');
+      }
+      if (!customerId || !lastVisitDate || !dueDate || !messageText || !partNames.length) {
+        throw new Error('下書きに必要な施術情報を確認できません。');
+      }
+      if (!['beard', 'body_vio'].includes(timingGroup)) {
+        throw new Error('施術区分を確認できません。');
+      }
+      if (confirmation !== '送信せず下書き保存') {
+        throw new Error('下書き保存の確認がありません。');
+      }
+      const expectedDueDate = addIsoDays(lastVisitDate, timingGroup === 'beard' ? 21 : 42);
+      if (dueDate !== expectedDueDate || dueDate > japanDateOnly()) {
+        throw new Error('送信予定日が安全条件と一致しません。');
+      }
+      const approved = await env.jos_customer_db.prepare(
+        `SELECT COUNT(*) AS matching_count
+           FROM customer_profiles
+          WHERE jos_customer_id = ? AND link_status = 'approved'`
+      ).bind(customerId).first();
+      if (Number(approved && approved.matching_count || 0) !== 1) {
+        throw new Error('お客様のLINE連携を1件に特定できません。');
+      }
+      const optOut = await env.jos_customer_db.prepare(
+        `SELECT jos_customer_id FROM followup_opt_outs WHERE jos_customer_id = ?`
+      ).bind(customerId).first();
+      if (optOut) throw new Error('LINE配信停止中のため下書きを保存できません。');
+      const existing = await env.jos_customer_db.prepare(
+        `SELECT delivery_id, status
+           FROM followup_deliveries
+          WHERE jos_customer_id = ? AND last_visit_date = ? AND timing_group = ?`
+      ).bind(customerId, lastVisitDate, timingGroup).first();
+      if (existing) {
+        if (existing.status === 'draft') {
+          return json({ ok: true, saved: true, idempotent: true, deliveryId: existing.delivery_id });
+        }
+        throw new Error('同じ施術にはすでに下書きまたは送信記録があります。');
+      }
+      const campaignId = 'manual-followup-review-v1';
+      const now = new Date().toISOString();
+      const trackingToken = crypto.randomUUID().replace(/-/g, '');
+      await env.jos_customer_db.batch([
+        env.jos_customer_db.prepare(
+          `INSERT OR IGNORE INTO followup_campaigns
+             (campaign_id, campaign_name, status, message_template, created_at)
+           VALUES (?, 'JOS PC 個別確認', 'draft', '', ?)`
+        ).bind(campaignId, now),
+        env.jos_customer_db.prepare(
+          `INSERT INTO followup_deliveries
+             (delivery_id, campaign_id, jos_customer_id, last_visit_date,
+              timing_group, due_date, part_names_json, message_text,
+              tracking_token, status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)`
+        ).bind(
+          draftId, campaignId, customerId, lastVisitDate, timingGroup, dueDate,
+          JSON.stringify(partNames), messageText, trackingToken, now
+        )
+      ]);
+      return json({ ok: true, saved: true, idempotent: false, deliveryId: draftId });
+    }
+
     if (pathname === '/api/admin/bookings/recent') {
       const result = await env.jos_customer_db.prepare(
         `SELECT request_id, customer_name, menu_names, reservation_date,
@@ -1316,8 +1409,8 @@ async function adminApi(request, env, pathname) {
       const deliveries = await env.jos_customer_db.prepare(
         `SELECT jos_customer_id, last_visit_date, sent_at, status
            FROM followup_deliveries
-          WHERE status = 'sent'
-          ORDER BY sent_at DESC
+          WHERE status IN ('draft', 'approved', 'sending', 'sent')
+          ORDER BY created_at DESC
           LIMIT 5000`
       ).all();
       return json({
