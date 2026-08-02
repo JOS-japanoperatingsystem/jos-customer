@@ -197,6 +197,27 @@ async function getLineMessagingProfile(env, token, lineUserId) {
 }
 
 function followupAdminTestMessage(messageType) {
+  if (messageType === 'reservation_reminder') {
+    return [
+      '【管理者本人向け・前日リマインド18時予約テスト】',
+      '予約した時刻に管理者LINEへ届くことを確認するテストです。お客様には送信されていません。',
+      '',
+      '〇〇 様',
+      '',
+      '明日のご予約についてお知らせいたします。',
+      '',
+      '予約日時：20XX-XX-XX 10:00',
+      '店舗：下関店',
+      'メニュー：テスト表示',
+      '',
+      'ご予約内容は、下記のお客様ページからご確認いただけます。',
+      'https://jos-customer.japan-operating-system.workers.dev/',
+      '',
+      '日時変更やキャンセルをご希望の場合は、お早めにお手続きください。',
+      '',
+      '明日のご来店をお待ちしております。'
+    ].join('\n');
+  }
   const treatmentLabel = messageType === 'beard' ? 'ひげ脱毛' : '体・VIO脱毛';
   return [
     '【管理者本人向けテスト】',
@@ -942,14 +963,16 @@ async function adminApi(request, env, pathname) {
       if (!/^[A-Za-z0-9-]{16,80}$/.test(testId)) {
         throw new Error('管理者テスト送信IDを確認できません。');
       }
-      if (!['beard', 'body_vio'].includes(messageType)) {
+      if (!['beard', 'body_vio', 'reservation_reminder'].includes(messageType)) {
         throw new Error('管理者テストの文章種別を確認できません。');
       }
       if (confirmation !== '管理者本人へテスト送信') {
         throw new Error('管理者本人へのテスト送信確認がありません。');
       }
+      const testTable = messageType === 'reservation_reminder'
+        ? 'reservation_reminder_admin_tests' : 'followup_admin_tests';
       const existing = await env.jos_customer_db.prepare(
-        `SELECT status FROM followup_admin_tests WHERE test_id = ?`
+        `SELECT status FROM ${testTable} WHERE test_id = ?`
       ).bind(testId).first();
       if (existing) {
         if (existing.status === 'sent') {
@@ -966,24 +989,28 @@ async function adminApi(request, env, pathname) {
       }
       const message = followupAdminTestMessage(messageType);
       const now = new Date().toISOString();
-      await env.jos_customer_db.prepare(
-        `INSERT INTO followup_admin_tests
-           (test_id, message_type, recipient_line_sub, recipient_display_name,
-            message_text, status, created_at)
-         VALUES (?, ?, ?, ?, ?, 'sending', ?)`
-      ).bind(
-        testId,
-        messageType,
-        setting.recipient_line_sub,
-        setting.recipient_display_name || '',
-        message,
-        now
-      ).run();
+      if (messageType === 'reservation_reminder') {
+        await env.jos_customer_db.prepare(
+          `INSERT INTO reservation_reminder_admin_tests
+             (test_id, recipient_line_sub, recipient_display_name,
+              message_text, status, created_at)
+           VALUES (?, ?, ?, ?, 'sending', ?)`
+        ).bind(testId, setting.recipient_line_sub,
+          setting.recipient_display_name || '', message, now).run();
+      } else {
+        await env.jos_customer_db.prepare(
+          `INSERT INTO followup_admin_tests
+             (test_id, message_type, recipient_line_sub, recipient_display_name,
+              message_text, status, created_at)
+           VALUES (?, ?, ?, ?, ?, 'sending', ?)`
+        ).bind(testId, messageType, setting.recipient_line_sub,
+          setting.recipient_display_name || '', message, now).run();
+      }
       try {
         await pushLineText(env, setting.recipient_line_sub, message);
         const sentAt = new Date().toISOString();
         await env.jos_customer_db.prepare(
-          `UPDATE followup_admin_tests
+          `UPDATE ${testTable}
               SET status = 'sent', sent_at = ?, last_error = ''
             WHERE test_id = ? AND status = 'sending'`
         ).bind(sentAt, testId).run();
@@ -995,7 +1022,7 @@ async function adminApi(request, env, pathname) {
         });
       } catch (error) {
         await env.jos_customer_db.prepare(
-          `UPDATE followup_admin_tests
+          `UPDATE ${testTable}
               SET status = 'failed', last_error = ?
             WHERE test_id = ? AND status = 'sending'`
         ).bind(normalizeText(error && error.message, 500), testId).run();

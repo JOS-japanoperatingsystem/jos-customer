@@ -7,6 +7,10 @@ const migration = fs.readFileSync(
   new URL('../migrations/0021_followup_line_admin_tests.sql', import.meta.url),
   'utf8'
 );
+const reminderMigration = fs.readFileSync(
+  new URL('../migrations/0022_reservation_reminder_admin_tests.sql', import.meta.url),
+  'utf8'
+);
 
 test('admin follow-up test is restricted to configured notification recipient', () => {
   const statusStart = worker.indexOf("if (pathname === '/api/admin/followups/admin-test-status')");
@@ -23,6 +27,20 @@ test('admin follow-up test is restricted to configured notification recipient', 
   assert.match(route, /line_notification_settings WHERE setting_id = 1/);
   assert.doesNotMatch(route, /body\.lineSub|body\.customerId|customer_profiles/);
   assert.match(route, /followupAdminTestMessage\(messageType\)/);
+});
+
+test('reservation reminder immediate test can only go to the configured admin', () => {
+  const start = worker.indexOf("if (pathname === '/api/admin/followups/admin-test-send')");
+  const end = worker.indexOf("if (pathname === '/api/admin/followups/draft-save')");
+  const route = worker.slice(start, end);
+  assert.match(route, /reservation_reminder/);
+  assert.match(route, /line_notification_settings/);
+  assert.match(route, /pushLineText\(env, setting\.recipient_line_sub, message\)/);
+  assert.match(worker, /管理者本人向け・前日リマインド18時予約テスト/);
+  assert.match(worker, /お客様には送信されていません/);
+  assert.match(route, /reservation_reminder_admin_tests/);
+  assert.match(reminderMigration, /CREATE TABLE IF NOT EXISTS reservation_reminder_admin_tests/);
+  assert.doesNotMatch(reminderMigration, /DROP TABLE|DELETE FROM|ALTER TABLE/);
 });
 
 test('admin follow-up test is durable, idempotent and records failures', () => {
