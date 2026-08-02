@@ -20,7 +20,7 @@ test('admin follow-up test is restricted to configured notification recipient', 
   assert.match(statusRoute, /line_notification_settings WHERE setting_id = 1/);
   assert.doesNotMatch(statusRoute, /flushPending|pushLineText|UPDATE|INSERT/);
   const start = worker.indexOf("if (pathname === '/api/admin/followups/admin-test-send')");
-  const end = worker.indexOf("if (pathname === '/api/admin/followups/draft-save')", start);
+  const end = worker.indexOf("if (pathname === '/api/admin/reminders/batches')", start);
   assert.ok(start > 0 && end > start);
   const route = worker.slice(start, end);
   assert.match(route, /confirmation !== '管理者本人へテスト送信'/);
@@ -31,7 +31,7 @@ test('admin follow-up test is restricted to configured notification recipient', 
 
 test('reservation reminder immediate test can only go to the configured admin', () => {
   const start = worker.indexOf("if (pathname === '/api/admin/followups/admin-test-send')");
-  const end = worker.indexOf("if (pathname === '/api/admin/followups/draft-save')");
+  const end = worker.indexOf("if (pathname === '/api/admin/reminders/batches')");
   const route = worker.slice(start, end);
   assert.match(route, /reservation_reminder/);
   assert.match(route, /line_notification_settings/);

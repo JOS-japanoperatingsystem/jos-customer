@@ -1030,6 +1030,370 @@ async function adminApi(request, env, pathname) {
       }
     }
 
+    if (pathname === '/api/admin/reminders/batches') {
+      const body = await readJson(request);
+      const targetDate = normalizeIsoDateOnly(body.targetDate);
+      if (!targetDate) throw new Error('前日リマインドの対象日を確認できません。');
+      const batch = await env.jos_customer_db.prepare(
+        `SELECT batch_id, target_date, scheduled_for, status, candidate_count,
+                created_at, approved_at, completed_at, cancelled_at, last_error
+           FROM reservation_reminder_batches
+          WHERE target_date = ?
+          ORDER BY created_at DESC LIMIT 1`
+      ).bind(targetDate).first();
+      if (!batch) return json({ ok: true, batch: null });
+      const counts = await env.jos_customer_db.prepare(
+        `SELECT status, COUNT(*) AS count
+           FROM reservation_reminder_deliveries
+          WHERE batch_id = ? GROUP BY status`
+      ).bind(batch.batch_id).all();
+      return json({
+        ok: true,
+        batch: {
+          batchId: batch.batch_id,
+          targetDate: batch.target_date,
+          scheduledFor: batch.scheduled_for,
+          status: batch.status,
+          candidateCount: Number(batch.candidate_count || 0),
+          createdAt: batch.created_at,
+          approvedAt: batch.approved_at || '',
+          completedAt: batch.completed_at || '',
+          cancelledAt: batch.cancelled_at || '',
+          lastError: batch.last_error || '',
+          deliveryCounts: Object.fromEntries((counts.results || []).map(row => [
+            row.status, Number(row.count || 0)
+          ]))
+        }
+      });
+    }
+
+    if (pathname === '/api/admin/reminders/batch-save') {
+      const body = await readJson(request);
+      const batchId = normalizeText(body.batchId, 80);
+      const targetDate = normalizeIsoDateOnly(body.targetDate);
+      const confirmation = normalizeText(body.confirmation, 100);
+      const items = Array.isArray(body.items) ? body.items.slice(0, 100) : [];
+      if (!/^[A-Za-z0-9-]{16,80}$/.test(batchId)) {
+        throw new Error('前日リマインドの保存IDを確認できません。');
+      }
+      if (confirmation !== '送信せず18時予定を保存') {
+        throw new Error('送信しない予定保存の確認がありません。');
+      }
+      if (targetDate !== addIsoDays(japanDateOnly(), 1) || !items.length) {
+        throw new Error('翌日の送信候補を確認できません。');
+      }
+      const existingId = await env.jos_customer_db.prepare(
+        `SELECT batch_id, status FROM reservation_reminder_batches WHERE batch_id = ?`
+      ).bind(batchId).first();
+      if (existingId) {
+        if (existingId.status === 'draft') {
+          return json({ ok: true, saved: true, idempotent: true, batchId });
+        }
+        throw new Error('同じ保存IDは再利用できません。');
+      }
+      const active = await env.jos_customer_db.prepare(
+        `SELECT batch_id FROM reservation_reminder_batches
+          WHERE target_date = ? AND status IN ('draft', 'scheduled', 'processing') LIMIT 1`
+      ).bind(targetDate).first();
+      if (active) throw new Error('同じ対象日の18時送信予定がすでにあります。');
+      const reservationIds = new Set();
+      const customerIds = new Set();
+      const normalizedItems = [];
+      for (const item of items) {
+        const reservationId = normalizeText(item && item.reservationId, 100);
+        const customerId = normalizeText(item && item.customerId, 100);
+        const reservationDate = normalizeIsoDateOnly(item && item.reservationDate);
+        const startTime = normalizeText(item && item.startTime, 20);
+        const endTime = normalizeText(item && item.endTime, 20);
+        const store = normalizeText(item && item.store, 100);
+        const menu = normalizeText(item && item.menu, 300);
+        const customerName = normalizeText(item && item.customerName, 100);
+        const messageText = normalizeLineMessage(item && item.messageText, 4500);
+        const deliveryId = normalizeText(item && item.deliveryId, 80);
+        if (!/^[A-Za-z0-9-]{16,80}$/.test(deliveryId) || !reservationId || !customerId ||
+            reservationDate !== targetDate || !/^\d{1,2}:\d{2}$/.test(startTime) ||
+            !store || !menu || !customerName || !messageText) {
+          throw new Error('保存する予約情報に不足があります。');
+        }
+        if (reservationIds.has(reservationId) || customerIds.has(customerId)) {
+          throw new Error('同じ予約またはお客様が重複しています。');
+        }
+        reservationIds.add(reservationId);
+        customerIds.add(customerId);
+        const profiles = await env.jos_customer_db.prepare(
+          `SELECT line_sub FROM customer_profiles
+            WHERE jos_customer_id = ? AND link_status = 'approved' LIMIT 2`
+        ).bind(customerId).all();
+        if ((profiles.results || []).filter(row => row.line_sub).length !== 1) {
+          throw new Error('お客様のLINE連携を1件に特定できません。');
+        }
+        normalizedItems.push({ deliveryId, reservationId, customerId, reservationDate,
+          startTime, endTime, store, menu, customerName, messageText });
+      }
+      const now = new Date().toISOString();
+      const scheduledFor = new Date(`${japanDateOnly()}T18:00:00+09:00`).toISOString();
+      const statements = [env.jos_customer_db.prepare(
+        `INSERT INTO reservation_reminder_batches
+           (batch_id, target_date, scheduled_for, status, candidate_count, created_at)
+         VALUES (?, ?, ?, 'draft', ?, ?)`
+      ).bind(batchId, targetDate, scheduledFor, normalizedItems.length, now)];
+      normalizedItems.forEach(item => statements.push(env.jos_customer_db.prepare(
+        `INSERT INTO reservation_reminder_deliveries
+           (delivery_id, batch_id, reservation_id, jos_customer_id,
+            reservation_date, start_time, end_time, store_name, menu_name,
+            customer_name, message_text, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)`
+      ).bind(item.deliveryId, batchId, item.reservationId, item.customerId,
+        item.reservationDate, item.startTime, item.endTime, item.store, item.menu,
+        item.customerName, item.messageText, now)));
+      await env.jos_customer_db.batch(statements);
+      return json({ ok: true, saved: true, idempotent: false, batchId,
+        candidateCount: normalizedItems.length, scheduledFor });
+    }
+
+    if (pathname === '/api/admin/reminders/batch-cancel') {
+      const body = await readJson(request);
+      const batchId = normalizeText(body.batchId, 80);
+      const confirmation = normalizeText(body.confirmation, 100);
+      if (!/^[A-Za-z0-9-]{16,80}$/.test(batchId) ||
+          confirmation !== '未送信の18時予定を取り消す') {
+        throw new Error('取消対象または確認内容が正しくありません。');
+      }
+      const batch = await env.jos_customer_db.prepare(
+        `SELECT status FROM reservation_reminder_batches WHERE batch_id = ?`
+      ).bind(batchId).first();
+      if (!batch) throw new Error('取り消す18時送信予定が見つかりません。');
+      if (batch.status === 'cancelled') {
+        return json({ ok: true, cancelled: true, idempotent: true });
+      }
+      if (batch.status !== 'draft') throw new Error('下書き状態以外は取り消せません。');
+      const now = new Date().toISOString();
+      await env.jos_customer_db.batch([
+        env.jos_customer_db.prepare(
+          `UPDATE reservation_reminder_batches SET status = 'cancelled', cancelled_at = ?
+            WHERE batch_id = ? AND status = 'draft'`
+        ).bind(now, batchId),
+        env.jos_customer_db.prepare(
+          `UPDATE reservation_reminder_deliveries SET status = 'cancelled'
+            WHERE batch_id = ? AND status = 'draft'`
+        ).bind(batchId)
+      ]);
+      return json({ ok: true, cancelled: true, idempotent: false });
+    }
+
+    if (pathname === '/api/admin/reminders/batch-approve') {
+      const body = await readJson(request);
+      const batchId = normalizeText(body.batchId, 80);
+      const confirmation = normalizeText(body.confirmation, 120);
+      if (!/^[A-Za-z0-9-]{16,80}$/.test(batchId) ||
+          confirmation !== '確認済み候補を本日18時に送信予約') {
+        throw new Error('18時送信予約の対象または確認内容が正しくありません。');
+      }
+      const batch = await env.jos_customer_db.prepare(
+        `SELECT target_date, scheduled_for, status, candidate_count
+           FROM reservation_reminder_batches WHERE batch_id = ?`
+      ).bind(batchId).first();
+      if (!batch) throw new Error('承認する18時送信予定が見つかりません。');
+      if (batch.status === 'scheduled') {
+        return json({ ok: true, scheduled: true, idempotent: true });
+      }
+      if (batch.status !== 'draft') throw new Error('未承認の予定以外は承認できません。');
+      if (normalizeIsoDateOnly(batch.target_date) !== addIsoDays(japanDateOnly(), 1)) {
+        throw new Error('翌日分以外の予定は承認できません。');
+      }
+      const japanTime = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit', hour12: false
+      }).format(new Date());
+      if (japanTime >= '18:00') throw new Error('18時を過ぎているため送信予約できません。');
+      const deliveries = await env.jos_customer_db.prepare(
+        `SELECT delivery_id, jos_customer_id FROM reservation_reminder_deliveries
+          WHERE batch_id = ? AND status = 'draft' ORDER BY start_time ASC`
+      ).bind(batchId).all();
+      if ((deliveries.results || []).length !== Number(batch.candidate_count || 0)) {
+        throw new Error('保存人数と送信予定人数が一致しません。');
+      }
+      for (const delivery of deliveries.results || []) {
+        const profiles = await env.jos_customer_db.prepare(
+          `SELECT line_sub FROM customer_profiles
+            WHERE jos_customer_id = ? AND link_status = 'approved' LIMIT 2`
+        ).bind(delivery.jos_customer_id).all();
+        if ((profiles.results || []).filter(row => row.line_sub).length !== 1) {
+          throw new Error('LINE連携を1件に特定できないお客様がいるため承認していません。');
+        }
+      }
+      const now = new Date().toISOString();
+      await env.jos_customer_db.batch([
+        env.jos_customer_db.prepare(
+          `UPDATE reservation_reminder_batches
+              SET status = 'scheduled', approved_at = ?, last_error = ''
+            WHERE batch_id = ? AND status = 'draft'`
+        ).bind(now, batchId),
+        env.jos_customer_db.prepare(
+          `UPDATE reservation_reminder_deliveries SET status = 'scheduled'
+            WHERE batch_id = ? AND status = 'draft'`
+        ).bind(batchId)
+      ]);
+      return json({ ok: true, scheduled: true, idempotent: false,
+        candidateCount: Number(batch.candidate_count || 0), scheduledFor: batch.scheduled_for });
+    }
+
+    if (pathname === '/api/admin/reminders/batch-due') {
+      const now = new Date();
+      const batch = await env.jos_customer_db.prepare(
+        `SELECT batch_id, target_date, scheduled_for, status
+           FROM reservation_reminder_batches
+          WHERE status = 'scheduled' AND scheduled_for <= ?
+          ORDER BY scheduled_for ASC LIMIT 1`
+      ).bind(now.toISOString()).first();
+      if (!batch) return json({ ok: true, batch: null, deliveries: [] });
+      if (normalizeIsoDateOnly(batch.target_date) !== addIsoDays(japanDateOnly(), 1)) {
+        throw new Error('送信対象日が翌日ではないため安全停止しました。');
+      }
+      const deliveries = await env.jos_customer_db.prepare(
+        `SELECT delivery_id, reservation_id, jos_customer_id, reservation_date,
+                start_time, end_time, store_name, menu_name, customer_name,
+                message_text, status
+           FROM reservation_reminder_deliveries
+          WHERE batch_id = ? AND status = 'scheduled'
+          ORDER BY start_time ASC, reservation_id ASC LIMIT 100`
+      ).bind(batch.batch_id).all();
+      return json({
+        ok: true,
+        batch: { batchId: batch.batch_id, targetDate: batch.target_date,
+          scheduledFor: batch.scheduled_for, status: batch.status },
+        deliveries: (deliveries.results || []).map(row => ({
+          deliveryId: row.delivery_id, reservationId: row.reservation_id,
+          customerId: row.jos_customer_id, reservationDate: row.reservation_date,
+          startTime: row.start_time, endTime: row.end_time,
+          store: row.store_name, menu: row.menu_name,
+          customerName: row.customer_name, messageText: row.message_text,
+          status: row.status
+        }))
+      });
+    }
+
+    if (pathname === '/api/admin/reminders/delivery-suppress') {
+      const body = await readJson(request);
+      const deliveryId = normalizeText(body.deliveryId, 80);
+      const reason = normalizeText(body.reason, 500);
+      const confirmation = normalizeText(body.confirmation, 100);
+      if (!/^[A-Za-z0-9-]{16,80}$/.test(deliveryId) || !reason ||
+          confirmation !== '送信直前確認で除外') {
+        throw new Error('送信除外の情報を確認できません。');
+      }
+      const result = await env.jos_customer_db.prepare(
+        `UPDATE reservation_reminder_deliveries
+            SET status = 'suppressed', last_error = ?
+          WHERE delivery_id = ? AND status = 'scheduled'`
+      ).bind(reason, deliveryId).run();
+      return json({ ok: true, suppressed: Number(result && result.meta && result.meta.changes || 0) === 1 });
+    }
+
+    if (pathname === '/api/admin/reminders/delivery-fail') {
+      const body = await readJson(request);
+      const deliveryId = normalizeText(body.deliveryId, 80);
+      const reason = normalizeText(body.reason, 500);
+      const confirmation = normalizeText(body.confirmation, 100);
+      if (!/^[A-Za-z0-9-]{16,80}$/.test(deliveryId) || !reason ||
+          confirmation !== '送信失敗を記録し自動再送しない') {
+        throw new Error('送信失敗の記録情報を確認できません。');
+      }
+      const result = await env.jos_customer_db.prepare(
+        `UPDATE reservation_reminder_deliveries
+            SET status = 'failed', last_error = ?
+          WHERE delivery_id = ? AND status = 'scheduled'`
+      ).bind(reason, deliveryId).run();
+      return json({ ok: true, failed: Number(result && result.meta && result.meta.changes || 0) === 1 });
+    }
+
+    if (pathname === '/api/admin/reminders/delivery-send') {
+      const body = await readJson(request);
+      const deliveryId = normalizeText(body.deliveryId, 80);
+      const confirmation = normalizeText(body.confirmation, 100);
+      const revalidatedAt = new Date(normalizeText(body.revalidatedAt, 40));
+      const age = Date.now() - revalidatedAt.getTime();
+      if (!/^[A-Za-z0-9-]{16,80}$/.test(deliveryId) ||
+          confirmation !== '18時予定の確認済み1件を送信') {
+        throw new Error('18時送信対象または確認内容が正しくありません。');
+      }
+      if (Number.isNaN(revalidatedAt.getTime()) || age < -5000 || age > 60000) {
+        throw new Error('JOSの送信直前確認が期限切れです。');
+      }
+      const delivery = await env.jos_customer_db.prepare(
+        `SELECT d.jos_customer_id, d.reservation_date, d.message_text, d.status,
+                b.status AS batch_status, b.scheduled_for
+           FROM reservation_reminder_deliveries d
+           JOIN reservation_reminder_batches b ON b.batch_id = d.batch_id
+          WHERE d.delivery_id = ?`
+      ).bind(deliveryId).first();
+      if (!delivery) throw new Error('18時送信対象が見つかりません。');
+      if (delivery.status === 'sent') return json({ ok: true, sent: true, idempotent: true });
+      if (delivery.status !== 'scheduled' || delivery.batch_status !== 'scheduled') {
+        throw new Error('承認済みの送信予定以外は送信できません。');
+      }
+      if (normalizeIsoDateOnly(delivery.reservation_date) !== addIsoDays(japanDateOnly(), 1) ||
+          new Date(delivery.scheduled_for).getTime() > Date.now()) {
+        throw new Error('18時送信の日時条件を満たしていません。');
+      }
+      const profiles = await env.jos_customer_db.prepare(
+        `SELECT line_sub FROM customer_profiles
+          WHERE jos_customer_id = ? AND link_status = 'approved' LIMIT 2`
+      ).bind(delivery.jos_customer_id).all();
+      const linked = (profiles.results || []).filter(row => row.line_sub);
+      if (linked.length !== 1) throw new Error('送信先LINEを1件に特定できません。');
+      const claimAt = new Date().toISOString();
+      const claim = await env.jos_customer_db.prepare(
+        `UPDATE reservation_reminder_deliveries
+            SET status = 'sending', attempt_count = attempt_count + 1,
+                last_attempt_at = ?, last_error = ''
+          WHERE delivery_id = ? AND status = 'scheduled'`
+      ).bind(claimAt, deliveryId).run();
+      if (Number(claim && claim.meta && claim.meta.changes || 0) !== 1) {
+        throw new Error('送信開始を安全に記録できませんでした。送信していません。');
+      }
+      try {
+        await pushLineText(env, linked[0].line_sub, delivery.message_text);
+      } catch (error) {
+        await env.jos_customer_db.prepare(
+          `UPDATE reservation_reminder_deliveries SET status = 'failed', last_error = ?
+            WHERE delivery_id = ? AND status = 'sending'`
+        ).bind(normalizeText(error && error.message, 500), deliveryId).run();
+        throw error;
+      }
+      const sentAt = new Date().toISOString();
+      const finalized = await env.jos_customer_db.prepare(
+        `UPDATE reservation_reminder_deliveries
+            SET status = 'sent', sent_at = ?, last_error = ''
+          WHERE delivery_id = ? AND status = 'sending'`
+      ).bind(sentAt, deliveryId).run();
+      if (Number(finalized && finalized.meta && finalized.meta.changes || 0) !== 1) {
+        throw new Error('LINE送信後の記録に失敗しました。自動再送は行いません。');
+      }
+      return json({ ok: true, sent: true, idempotent: false, sentAt });
+    }
+
+    if (pathname === '/api/admin/reminders/batch-finalize') {
+      const body = await readJson(request);
+      const batchId = normalizeText(body.batchId, 80);
+      if (!/^[A-Za-z0-9-]{16,80}$/.test(batchId)) throw new Error('完了対象を確認できません。');
+      const counts = await env.jos_customer_db.prepare(
+        `SELECT status, COUNT(*) AS count FROM reservation_reminder_deliveries
+          WHERE batch_id = ? GROUP BY status`
+      ).bind(batchId).all();
+      const values = Object.fromEntries((counts.results || []).map(row => [row.status, Number(row.count || 0)]));
+      if (Number(values.scheduled || 0) || Number(values.sending || 0)) {
+        return json({ ok: true, finalized: false, deliveryCounts: values });
+      }
+      const hasFailure = Number(values.failed || 0) > 0;
+      const status = hasFailure ? 'partial' : 'completed';
+      const now = new Date().toISOString();
+      await env.jos_customer_db.prepare(
+        `UPDATE reservation_reminder_batches SET status = ?, completed_at = ?
+          WHERE batch_id = ? AND status = 'scheduled'`
+      ).bind(status, now, batchId).run();
+      return json({ ok: true, finalized: true, status, deliveryCounts: values });
+    }
+
     if (pathname === '/api/admin/followups/draft-save') {
       const body = await readJson(request);
       const draftId = normalizeText(body.draftId, 80);
