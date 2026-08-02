@@ -345,12 +345,22 @@ function customerLifecycleMessage(type, customer) {
   const details = [
     `${name} 様`,
     kana ? `フリガナ：${kana}` : '',
+    customer.birthday ? `生年月日：${customer.birthday}` : '',
     customer.phone ? `電話番号：${customer.phone}` : '',
     customer.customerId ? `顧客ID：${customer.customerId}` : ''
   ].filter(Boolean);
   if (type === 'new-registration') {
     return ['【新規顧客が登録されました】', ...details,
       'JOSへ自動登録・連携されます。'].join('\n');
+  }
+  if (type === 'auto-link-completed') {
+    return ['【お客様ページ自動連携完了】', ...details,
+      '氏名・生年月日・電話番号が一致し、候補が1人だけだったため自動連携されました。'].join('\n');
+  }
+  if (type === 'manual-link-review') {
+    return ['【お客様ページ連携・手動確認が必要】', ...details,
+      '氏名・生年月日・電話番号の完全一致が1人に絞れませんでした。',
+      'JOSのお客様ページ連携確認を開いてください。'].join('\n');
   }
   return ['【お客様ページ連携申請】', ...details,
     'お客様ページ連携確認をしてください。'].join('\n');
@@ -888,16 +898,15 @@ async function saveProfile(env, identity, input) {
     now
   ).run();
 
-  {
-    const lifecycleType = profile.registrationType === 'new'
-      ? 'new-registration' : 'existing-link-request';
-    await queueCustomerLifecycleNotification(env, lifecycleType, identity.sub, {
+  if (profile.registrationType === 'new') {
+    await queueCustomerLifecycleNotification(env, 'new-registration', identity.sub, {
       lineDisplayName: identity.displayName,
       lastName: profile.lastName,
       firstName: profile.firstName,
       lastKana: profile.lastKana,
       firstKana: profile.firstKana,
-      phone: profile.phone
+      phone: profile.phone,
+      birthday: profile.birthday
     });
   }
 
@@ -2036,6 +2045,36 @@ async function adminApi(request, env, pathname) {
       });
     }
 
+    if (pathname === '/api/admin/link-review-notify') {
+      const body = await readJson(request);
+      const approvalKey = normalizeText(body.approvalKey, 80);
+      if (!approvalKey) throw new Error('連携申請を確認できませんでした。');
+      const target = await env.jos_customer_db.prepare(
+        `SELECT line_sub, line_display_name, last_name, first_name, last_kana,
+                first_kana, phone, birthday
+           FROM customer_profiles
+          WHERE approval_key = ? AND link_status = 'pending'`
+      ).bind(approvalKey).first();
+      if (!target) {
+        return json({ ok: true, skipped: true, reason: 'not-pending' });
+      }
+      const delivery = await queueCustomerLifecycleNotification(
+        env,
+        'manual-link-review',
+        target.line_sub,
+        {
+          lineDisplayName: target.line_display_name,
+          lastName: target.last_name,
+          firstName: target.first_name,
+          lastKana: target.last_kana,
+          firstKana: target.first_kana,
+          phone: target.phone,
+          birthday: target.birthday
+        }
+      );
+      return json({ ok: true, queued: delivery.sent !== true });
+    }
+
     if (pathname === '/api/admin/followups/safety-state') {
       const approved = await env.jos_customer_db.prepare(
         `SELECT jos_customer_id
@@ -2272,11 +2311,12 @@ async function adminApi(request, env, pathname) {
       const body = await readJson(request);
       const approvalKey = normalizeText(body.approvalKey, 80);
       const customerId = normalizeText(body.customerId, 80);
+      const approvalMode = normalizeText(body.approvalMode, 20);
       if (!approvalKey || !customerId) throw new Error('連携対象が正しくありません。');
 
       const target = await env.jos_customer_db.prepare(
         `SELECT line_sub, line_display_name, last_name, first_name, last_kana,
-                first_kana, phone, registration_type
+                first_kana, phone, birthday, registration_type
            FROM customer_profiles
           WHERE approval_key = ? AND link_status = 'pending'`
       ).bind(approvalKey).first();
@@ -2291,8 +2331,24 @@ async function adminApi(request, env, pathname) {
       if (!result.meta || Number(result.meta.changes || 0) !== 1) {
         return json({ ok: false, message: '対象が見つからないか、すでに連携済みです。' }, 409);
       }
-      // 承認操作の完了通知は送らない。申請通知はお客様の登録時点で送信済み。
-      return json({ ok: true });
+      if (approvalMode === 'automatic') {
+        await queueCustomerLifecycleNotification(
+          env,
+          'auto-link-completed',
+          target.line_sub,
+          {
+            lineDisplayName: target.line_display_name,
+            lastName: target.last_name,
+            firstName: target.first_name,
+            lastKana: target.last_kana,
+            firstKana: target.first_kana,
+            phone: target.phone,
+            birthday: target.birthday,
+            customerId
+          }
+        );
+      }
+      return json({ ok: true, approvalMode: approvalMode === 'automatic' ? 'automatic' : 'manual' });
     }
 
     if (pathname === '/api/admin/reservation-actions/pending') {
