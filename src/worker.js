@@ -1922,8 +1922,9 @@ async function adminApi(request, env, pathname) {
 
     if (pathname === '/api/admin/policies/controls') {
       const result = await env.jos_customer_db.prepare(
-        `SELECT jos_customer_id, manual_restricted, manual_restriction_note,
-                policy_reset_at
+        `SELECT jos_customer_id, normal_cancel_count, same_day_count,
+                no_show_count, automatic_restricted, manual_restricted,
+                manual_restriction_note, policy_reset_at, synced_at
            FROM customer_booking_policy
           ORDER BY jos_customer_id ASC
           LIMIT 1000`
@@ -1932,9 +1933,14 @@ async function adminApi(request, env, pathname) {
         ok: true,
         controls: (result.results || []).map(row => ({
           customerId: row.jos_customer_id,
+          normalCancelCount: Number(row.normal_cancel_count || 0),
+          sameDayCount: Number(row.same_day_count || 0),
+          noShowCount: Number(row.no_show_count || 0),
+          automaticRestricted: Number(row.automatic_restricted || 0) === 1,
           manualRestricted: Number(row.manual_restricted || 0) === 1,
           manualRestrictionNote: row.manual_restriction_note || '',
-          policyResetAt: row.policy_reset_at || ''
+          policyResetAt: row.policy_reset_at || '',
+          syncedAt: row.synced_at || ''
         }))
       });
     }
