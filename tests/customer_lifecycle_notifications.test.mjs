@@ -5,13 +5,14 @@ import fs from 'node:fs';
 const worker = fs.readFileSync(new URL('../src/worker.js', import.meta.url), 'utf8');
 const migration = fs.readFileSync(new URL('../migrations/0019_customer_lifecycle_notifications.sql', import.meta.url), 'utf8');
 
-test('new registrations notify at submission while existing links wait for match result', () => {
+test('new and existing registrations notify safely at submission', () => {
   assert.match(worker, /profile\.registrationType === 'new'/);
   assert.match(worker, /'new-registration'/);
   const saveStart = worker.indexOf('async function saveProfile');
   const saveEnd = worker.indexOf('function adminAuthorized', saveStart);
   const saveRoute = worker.slice(saveStart, saveEnd);
-  assert.doesNotMatch(saveRoute, /'existing-link-request'/);
+  assert.match(saveRoute, /'existing-link-request'/);
+  assert.match(worker, /【お客様ページ連携申請を受け付けました】/);
   assert.match(worker, /pushLineText/);
 });
 

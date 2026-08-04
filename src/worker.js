@@ -353,6 +353,10 @@ function customerLifecycleMessage(type, customer) {
     return ['【新規顧客が登録されました】', ...details,
       'JOSへ自動登録・連携されます。'].join('\n');
   }
+  if (type === 'existing-link-request') {
+    return ['【お客様ページ連携申請を受け付けました】', ...details,
+      'JOSで氏名・生年月日・電話番号を確認し、自動連携を行います。'].join('\n');
+  }
   if (type === 'auto-link-completed') {
     return ['【お客様ページ自動連携完了】', ...details,
       '氏名・生年月日・電話番号が一致し、候補が1人だけだったため自動連携されました。'].join('\n');
@@ -901,6 +905,16 @@ async function saveProfile(env, identity, input) {
 
   if (profile.registrationType === 'new') {
     await queueCustomerLifecycleNotification(env, 'new-registration', identity.sub, {
+      lineDisplayName: identity.displayName,
+      lastName: profile.lastName,
+      firstName: profile.firstName,
+      lastKana: profile.lastKana,
+      firstKana: profile.firstKana,
+      phone: profile.phone,
+      birthday: profile.birthday
+    });
+  } else {
+    await queueCustomerLifecycleNotification(env, 'existing-link-request', identity.sub, {
       lineDisplayName: identity.displayName,
       lastName: profile.lastName,
       firstName: profile.firstName,
