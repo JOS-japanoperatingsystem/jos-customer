@@ -24,6 +24,9 @@ test('reservation reminder batch draft persists without any LINE sending route',
 test('approved reminder batch sends only freshly revalidated deliveries once', () => {
   assert.match(worker, /\/api\/admin\/reminders\/batch-approve/);
   assert.match(worker, /confirmation !== '確認済み候補を本日18時に送信予約'/);
+  assert.match(worker, /確認済み候補を今すぐ送信予約/);
+  assert.match(worker, /effectiveScheduledFor = immediate \? now : batch\.scheduled_for/);
+  assert.match(worker, /scheduled_for = \?/);
   assert.match(worker, /\/api\/admin\/reminders\/batch-due/);
   assert.match(worker, /\/api\/admin\/reminders\/delivery-send/);
   assert.match(worker, /confirmation !== '18時予定の確認済み1件を送信'/);

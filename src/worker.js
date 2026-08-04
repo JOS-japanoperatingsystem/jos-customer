@@ -1263,8 +1263,9 @@ async function adminApi(request, env, pathname) {
       const body = await readJson(request);
       const batchId = normalizeText(body.batchId, 80);
       const confirmation = normalizeText(body.confirmation, 120);
+      const immediate = confirmation === '確認済み候補を今すぐ送信予約';
       if (!/^[A-Za-z0-9-]{16,80}$/.test(batchId) ||
-          confirmation !== '確認済み候補を本日18時に送信予約') {
+          (!immediate && confirmation !== '確認済み候補を本日18時に送信予約')) {
         throw new Error('18時送信予約の対象または確認内容が正しくありません。');
       }
       const batch = await env.jos_customer_db.prepare(
@@ -1282,7 +1283,12 @@ async function adminApi(request, env, pathname) {
       const japanTime = new Intl.DateTimeFormat('en-CA', {
         timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit', hour12: false
       }).format(new Date());
-      if (japanTime >= '18:00') throw new Error('18時を過ぎているため送信予約できません。');
+      if (immediate && japanTime < '18:00') {
+        throw new Error('18時前のため今すぐ送信は使用できません。');
+      }
+      if (!immediate && japanTime >= '18:00') {
+        throw new Error('18時を過ぎているため通常の送信予約はできません。');
+      }
       const deliveries = await env.jos_customer_db.prepare(
         `SELECT delivery_id, jos_customer_id FROM reservation_reminder_deliveries
           WHERE batch_id = ? AND status = 'draft' ORDER BY start_time ASC`
@@ -1300,19 +1306,21 @@ async function adminApi(request, env, pathname) {
         }
       }
       const now = new Date().toISOString();
+      const effectiveScheduledFor = immediate ? now : batch.scheduled_for;
       await env.jos_customer_db.batch([
         env.jos_customer_db.prepare(
           `UPDATE reservation_reminder_batches
-              SET status = 'scheduled', approved_at = ?, last_error = ''
+              SET status = 'scheduled', approved_at = ?, scheduled_for = ?, last_error = ''
             WHERE batch_id = ? AND status = 'draft'`
-        ).bind(now, batchId),
+        ).bind(now, effectiveScheduledFor, batchId),
         env.jos_customer_db.prepare(
           `UPDATE reservation_reminder_deliveries SET status = 'scheduled'
             WHERE batch_id = ? AND status = 'draft'`
         ).bind(batchId)
       ]);
       return json({ ok: true, scheduled: true, idempotent: false,
-        candidateCount: Number(batch.candidate_count || 0), scheduledFor: batch.scheduled_for });
+        immediate, candidateCount: Number(batch.candidate_count || 0),
+        scheduledFor: effectiveScheduledFor });
     }
 
     if (pathname === '/api/admin/reminders/batch-due') {
