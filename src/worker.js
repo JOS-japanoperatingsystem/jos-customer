@@ -2240,15 +2240,17 @@ async function adminApi(request, env, pathname) {
         if (!menuId || !menuName) return;
         statements.push(env.jos_customer_db.prepare(
           `INSERT INTO menu_catalog
-             (menu_id, menu_name, category, normal_price, student_price,
+             (menu_id, menu_name, category, normal_price, student_price, initial_price,
               treatment_time, sort_order, is_active, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         ).bind(
           menuId,
           menuName,
           normalizeText(item.category, 120),
           Math.max(0, Math.round(Number(item.normalPrice || 0))),
           Math.max(0, Math.round(Number(item.studentPrice || 0))),
+          item.initialPrice === null || item.initialPrice === undefined
+            ? null : Math.max(0, Math.round(Number(item.initialPrice || 0))),
           Math.max(0, Math.round(Number(item.treatmentTime || 0))),
           Math.round(Number(item.sortOrder || index + 1)),
           item.isActive === false ? 0 : 1,
@@ -2258,6 +2260,34 @@ async function adminApi(request, env, pathname) {
 
       await env.jos_customer_db.batch(statements);
       return json({ ok: true, menuCount: statements.length - 1 });
+    }
+
+    if (pathname === '/api/admin/customer-maintenance/sync') {
+      const body = await readJson(request);
+      const customerId = normalizeText(body.customerId, 80);
+      const settings = Array.isArray(body.settings) ? body.settings : [];
+      if (!customerId) throw new Error('顧客IDがありません。');
+      if (settings.length > 100) throw new Error('メンテナンス設定件数が多すぎます。');
+      const now = new Date().toISOString();
+      const statements = [
+        env.jos_customer_db.prepare(
+          `DELETE FROM customer_menu_maintenance WHERE jos_customer_id = ?`
+        ).bind(customerId)
+      ];
+      settings.forEach((item) => {
+        const menuId = normalizeText(item.menuId, 80);
+        const price = Number(item.maintenancePrice);
+        if (!menuId || !Number.isInteger(price) || price < 0 || price > 9999999) {
+          throw new Error('メンテナンス料金の内容を確認できません。');
+        }
+        statements.push(env.jos_customer_db.prepare(
+          `INSERT INTO customer_menu_maintenance
+             (jos_customer_id, menu_id, maintenance_price, is_active, updated_at)
+           VALUES (?, ?, ?, 1, ?)`
+        ).bind(customerId, menuId, price, now));
+      });
+      await env.jos_customer_db.batch(statements);
+      return json({ ok: true, customerId, settingCount: settings.length });
     }
 
     if (pathname === '/api/admin/availability/sync') {
@@ -2295,7 +2325,8 @@ async function adminApi(request, env, pathname) {
     if (pathname === '/api/admin/bookings/pending') {
       const result = await env.jos_customer_db.prepare(
         `SELECT request_id, jos_customer_id, customer_name, menu_ids,
-                reservation_date, start_time, end_time, treatment_time, created_at
+                reservation_date, start_time, end_time, treatment_time,
+                customer_total, created_at
            FROM customer_booking_requests
           WHERE status = 'pending'
           ORDER BY created_at ASC LIMIT 100`
@@ -2311,6 +2342,7 @@ async function adminApi(request, env, pathname) {
           startTime: row.start_time,
           endTime: row.end_time,
           treatmentTime: Number(row.treatment_time || 0),
+          customerTotal: Number(row.customer_total || 0),
           createdAt: row.created_at
         }))
       });
@@ -2551,10 +2583,14 @@ async function api(request, env, pathname) {
       }
 
       const result = await env.jos_customer_db.prepare(
-        `SELECT menu_id, menu_name, category, normal_price, student_price, treatment_time
-           FROM menu_catalog WHERE is_active = 1
+        `SELECT m.menu_id, m.menu_name, m.category, m.normal_price, m.student_price,
+                m.initial_price, m.treatment_time, cm.maintenance_price
+           FROM menu_catalog m
+           LEFT JOIN customer_menu_maintenance cm
+             ON cm.menu_id = m.menu_id AND cm.jos_customer_id = ? AND cm.is_active = 1
+          WHERE m.is_active = 1
           ORDER BY sort_order ASC, menu_name ASC`
-      ).all();
+      ).bind(profile.jos_customer_id).all();
 
       return json({
         ok: true,
@@ -2564,6 +2600,9 @@ async function api(request, env, pathname) {
           category: row.category,
           normalPrice: Number(row.normal_price || 0),
           studentPrice: Number(row.student_price || 0),
+          initialPrice: row.initial_price === null ? null : Number(row.initial_price || 0),
+          maintenancePrice: row.maintenance_price === null
+            ? null : Number(row.maintenance_price || 0),
           treatmentTime: Number(row.treatment_time || 0)
         }))
       });
@@ -2666,10 +2705,13 @@ async function api(request, env, pathname) {
 
       const placeholders = menuIds.map(() => '?').join(',');
       const menuResult = await env.jos_customer_db.prepare(
-        `SELECT menu_id, menu_name, normal_price, student_price, treatment_time
-           FROM menu_catalog
-          WHERE is_active = 1 AND menu_id IN (${placeholders})`
-      ).bind(...menuIds).all();
+        `SELECT m.menu_id, m.menu_name, m.normal_price, m.student_price,
+                m.treatment_time, cm.maintenance_price
+           FROM menu_catalog m
+           LEFT JOIN customer_menu_maintenance cm
+             ON cm.menu_id = m.menu_id AND cm.jos_customer_id = ? AND cm.is_active = 1
+          WHERE m.is_active = 1 AND m.menu_id IN (${placeholders})`
+      ).bind(profile.jos_customer_id, ...menuIds).all();
       const menus = menuResult.results || [];
       if (menus.length !== menuIds.length) throw new Error('選択されたメニューを確認できませんでした。');
 
@@ -2681,6 +2723,11 @@ async function api(request, env, pathname) {
       const treatmentTime = menuTreatmentTime + firstVisitMinutes;
       const normalTotal = menus.reduce((sum, menu) => sum + Number(menu.normal_price || 0), 0);
       const studentTotal = menus.reduce((sum, menu) => sum + Number(menu.student_price || menu.normal_price || 0), 0);
+      const customerTotal = menus.reduce((sum, menu) => sum + Number(
+        menu.maintenance_price === null
+          ? (profile.customer_type === '学生' ? menu.student_price || menu.normal_price : menu.normal_price)
+          : menu.maintenance_price
+      ), 0);
       const toMinutes = value => {
         const parts = String(value || '').split(':');
         return Number(parts[0]) * 60 + Number(parts[1]);
@@ -2702,8 +2749,8 @@ async function api(request, env, pathname) {
         `INSERT INTO customer_booking_requests
            (request_id, line_sub, jos_customer_id, customer_name, menu_ids,
             menu_names, reservation_date, start_time, end_time, treatment_time,
-            normal_total, student_total, status, created_at, updated_at)
-         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?
+            normal_total, student_total, customer_total, status, created_at, updated_at)
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?
           WHERE NOT EXISTS (
             SELECT 1 FROM availability_busy
              WHERE busy_date = ? AND ? < end_time AND ? > start_time
@@ -2726,6 +2773,7 @@ async function api(request, env, pathname) {
         treatmentTime,
         normalTotal,
         studentTotal,
+        customerTotal,
         now,
         now,
         date,
@@ -2745,7 +2793,7 @@ async function api(request, env, pathname) {
         date,
         startTime,
         endTime,
-        price: profile.customer_type === '学生' ? studentTotal : normalTotal
+        price: customerTotal
       });
       return json({ ok: true, requestId, status: 'pending' });
     }

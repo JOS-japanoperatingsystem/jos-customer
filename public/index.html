@@ -245,10 +245,7 @@
         <div id="menuSummary" class="menu-summary" hidden>
           <div class="summary-row"><span class="summary-label">選択メニュー数</span><span id="selectedMenuCount" class="summary-value">0件</span></div>
           <div class="summary-row"><span class="summary-label">合計予約枠時間</span><span id="selectedMenuTime" class="summary-value">0分</span></div>
-          <div class="summary-row total"><span class="summary-label">通常料金 合計</span><span id="selectedNormalTotal" class="summary-value">0円</span></div>
-          <div class="summary-row"><span class="summary-label">学生料金 合計</span><span id="selectedStudentTotal" class="summary-value">0円</span></div>
           <div id="firstVisitTimeNote" class="summary-note" hidden>初回カウンセリング15分を含みます。</div>
-          <div class="summary-note">学生料金の適用は、店舗で登録されている学生区分をもとに予約確定時に判定します。</div>
         </div>
         <button id="bookingNextButton" class="primary" type="button" disabled>日時を選択する</button>
         <section id="dateStep" class="date-step" hidden>
@@ -267,7 +264,7 @@
           <div class="confirm-line"><span>メニュー</span><strong id="confirmMenus"></strong></div>
           <div class="confirm-line"><span>日時</span><strong id="confirmDateTime"></strong></div>
           <div class="confirm-line"><span>予約枠時間</span><strong id="confirmTime"></strong></div>
-          <p class="summary-note">料金は店舗登録の学生区分・来店履歴・各種割引をもとにJOSで正式計算します。</p>
+          <p class="summary-note">料金はお客様ごとに異なるため、店舗でご案内します。</p>
           <div class="policy-panel">
             <div class="policy-title">予約変更・キャンセル規定</div>
             <div class="policy-message">直近3か月の当日変更・当日キャンセルが3回、または無断キャンセルが2回になると、オンライン予約が制限されます。</div>
@@ -526,12 +523,8 @@
       const firstVisitMinutes = currentProfile &&
         currentProfile.needsInitialCounseling === true && selected.length ? 15 : 0;
       const totalTime = menuTime + firstVisitMinutes;
-      const normalTotal = selected.reduce((sum, menu) => sum + Number(menu.normalPrice || 0), 0);
-      const studentTotal = selected.reduce((sum, menu) => sum + Number(menu.studentPrice || menu.normalPrice || 0), 0);
       byId('selectedMenuCount').textContent = selected.length + '件';
       byId('selectedMenuTime').textContent = totalTime + '分';
-      byId('selectedNormalTotal').textContent = formatYen(normalTotal);
-      byId('selectedStudentTotal').textContent = formatYen(studentTotal);
       byId('firstVisitTimeNote').hidden = firstVisitMinutes === 0;
       byId('menuSummary').hidden = selected.length === 0;
       byId('bookingNextButton').disabled = selected.length === 0;
@@ -633,8 +626,7 @@
           byId('bookingResult').innerHTML =
             '予約が確定しました<br>' +
             booking.date.replace(/-/g, '/') + '　' + booking.startTime + '〜' + booking.endTime +
-            '<br>' + booking.menuNames +
-            '<br>予定料金 ' + formatYen(booking.finalPrice);
+            '<br>' + booking.menuNames;
           loadNextReservation();
         } else {
           byId('bookingResult').textContent = booking.message || '予約を確定できませんでした。別の日時をお選びください。';
@@ -721,9 +713,12 @@
           price.className = 'menu-price';
           const normal = Number(menu.normalPrice || 0);
           const student = Number(menu.studentPrice || normal);
-          price.textContent = student !== normal
-            ? '通常 ' + formatYen(normal) + ' / 学生 ' + formatYen(student)
-            : formatYen(normal);
+          const initial = menu.initialPrice === null || menu.initialPrice === undefined
+            ? normal : Number(menu.initialPrice || 0);
+          const isFullBodyRange = String(menu.menuName || '').includes('全身') && normal === 12500;
+          const normalLabel = isFullBodyRange ? '12,500〜15,000円' : formatYen(normal);
+          price.textContent = '一般 ' + normalLabel + ' / 学生 ' + formatYen(student) +
+            ' / 新規 ' + formatYen(initial);
           button.append(check, body, price);
           button.addEventListener('click', () => {
             if (selectedMenuIds.has(menu.menuId)) selectedMenuIds.delete(menu.menuId);
